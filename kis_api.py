@@ -434,12 +434,6 @@ class KisAPI:
         return holdings, cash_usd
 
     def get_us_drwg_amt(self) -> float:
-        """달러 잔고 조회 (get_us_balance와 동일 값)"""
-        return self.get_us_balance()[1]
-
-        return holdings, cash_usd
-
-    def get_us_drwg_amt(self) -> float:
         """달러 익일 출금가능금액 조회 (CTRP6504R nxdy_frcr_drwg_psbl_amt)"""
         try:
             data = self._get(

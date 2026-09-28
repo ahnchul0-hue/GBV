@@ -1,0 +1,12 @@
+# 토큰 캐시 (계좌 접근 권한 - 절대 커밋 금지)
+kis_token.json
+kiwoom_token_*.json
+
+# 실행 산출물
+logs/
+reports/
+
+# Python
+__pycache__/
+*.pyc
+.venv/

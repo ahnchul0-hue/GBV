@@ -36,9 +36,9 @@ _bot = None
 def setup_handlers(bot):
     """봇 핸들러 등록"""
     
-    # KIS API 임포트 (지연 임포트)
-    from kis_api import KisAPI
-    from config_manager import load_config, get_api_info, get_outside_tqqq
+    # 증권사 API 임포트 (지연 임포트)
+    from broker import get_broker
+    from config_manager import load_config, get_outside_tqqq
     
     @bot.message_handler(commands=['set'])
     def set_value(message):
@@ -170,8 +170,7 @@ def setup_handlers(bot):
         """계좌 잔고 조회"""
         try:
             config = load_config()
-            app_key, app_secret, account_no = get_api_info(config)
-            kis = KisAPI(app_key, app_secret, account_no)
+            kis = get_broker(config)  # 메인 루프와 같은 객체 공유 (토큰/요청 간격 공유)
             
             # 미국
             us_holdings, us_cash = kis.get_us_balance()

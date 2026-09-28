@@ -3,7 +3,19 @@
 # ═══════════════════════════════════════════════
 
 # ───────────────────────────────────────
+# 증권사 선택
+# broker      : kiwoom (기본) 또는 kis
+# kiwoom_mode : real (실전) 또는 demo (모의투자)
+#               ※ 실전/모의투자 앱키가 서로 다름
+# ───────────────────────────────────────
+broker      = kiwoom
+kiwoom_mode = real
+
+# ───────────────────────────────────────
 # API 정보 (필수)
+# 키움: openapi.kiwoom.com 에서 발급한 App Key / Secret Key
+#       계좌는 앱키에 연결되어 있어 account_no는 표시용(선택)
+# KIS : app_key / app_secret / account_no 모두 필수
 # ───────────────────────────────────────
 app_key    = XXXXXXXXXXXXXXXXXXXXXXX
 app_secret = XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX

@@ -12,14 +12,15 @@ import logging
 import time
 from datetime import date
 
-# KIS API 체결 반영 대기 시간 (초)
+# 주문 후 잔고 반영 대기 시간 (초)
 SETTLEMENT_WAIT_SEC = 3
 
 from config_manager import (
     load_config, get_all_us_tickers, get_all_kr_tickers,
     get_base_value, get_monthly_rate,
     get_outside_tqqq, update_base, update_monthly_increase_date,
-    get_last_increased_month, is_first_trading_day_of_month
+    get_last_increased_month, is_first_trading_day_of_month,
+    normalize_kr_ticker
 )
 from notifier import (
     notify_buy, notify_sell,
@@ -48,7 +49,9 @@ def execute_gbv(kis, ticker: str, price: float, base_value: float,
         current_qty = holdings.get(ticker, {}).get("qty", 0)
     else:
         holdings, cash = kis.get_kr_balance()
-        current_qty = holdings.get(ticker, {}).get("qty", 0)
+        # config 종목코드가 'A252670'처럼 접두어가 붙어 있어도 잔고(6자리)와 매칭
+        info = holdings.get(ticker) or holdings.get(normalize_kr_ticker(ticker), {})
+        current_qty = info.get("qty", 0)
     
     # TQQQ의 경우 outside 포함
     total_qty = current_qty
@@ -238,6 +241,8 @@ def run_kr_strategy(kis):
     for ticker in all_kr_tickers.keys():
         try:
             prices[ticker] = kis.get_kr_price(ticker)
+            # 잔고 키(6자리)로도 조회되도록 (평가금/리포트 계산용)
+            prices.setdefault(normalize_kr_ticker(ticker), prices[ticker])
             logger.info(f"{ticker} 현재가: ₩{int(prices[ticker]):,}")
         except Exception as e:
             logger.error(f"현재가 조회 실패 ({ticker}): {e}")

@@ -12,9 +12,9 @@ import threading
 from datetime import datetime
 
 from config_manager import (
-    load_config, get_api_info, get_market_times, get_trading_enabled
+    load_config, get_market_times, get_trading_enabled
 )
-from kis_api import KisAPI
+from broker import get_broker, validate_api_info, describe_broker
 from strategy import run_us_strategy, run_kr_strategy
 from notifier import notify_error, _send
 from telegram_handler import start_polling
@@ -59,7 +59,7 @@ def _is_weekday() -> bool:
     return datetime.now().weekday() < 5
 
 
-def _notify_pre_trade(kis: KisAPI, market: str):
+def _notify_pre_trade(kis, market: str):
     """매매 1시간 전 계좌 현황 텔레그램 전송"""
     try:
         from config_manager import get_outside_tqqq
@@ -157,14 +157,13 @@ def main():
     
     # ── config 및 API 초기화 ──
     config = load_config()
-    app_key, app_secret, account_no = get_api_info(config)
-    
-    if not all([app_key, app_secret, account_no]):
-        logger.error("config.txt에 API 정보를 입력하세요")
+    error = validate_api_info(config)
+    if error:
+        logger.error(error)
         return
     
-    kis = KisAPI(app_key, app_secret, account_no)
-    logger.info("KIS API 초기화 완료")
+    kis = get_broker(config)
+    logger.info(f"{describe_broker(config)} 초기화 완료")
     
     # ── 텔레그램 백그라운드 시작 ──
     stop_event = threading.Event()
