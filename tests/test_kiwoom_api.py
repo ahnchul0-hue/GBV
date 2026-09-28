@@ -216,6 +216,21 @@ class TokenAndRequestTest(KiwoomTestCase):
             api.get_kr_price("005930")
         self.assertEqual(ctx.exception.return_code, 1700)
 
+    def test_non_json_200_is_failure(self):
+        # 점검 페이지 등 JSON이 아닌 200 응답을 '보유 0주'로 오인하면 전량 매수가 나간다
+        api, _ = self.make_api({"kt00018": FakeResponse(ValueError("not json"))})
+        with self.assertRaises(KiwoomError):
+            api.get_kr_balance()
+
+    def test_missing_return_code_is_failure(self):
+        api, _ = self.make_api({"ust21070": {"return_msg": "알 수 없는 응답"}})
+        with self.assertRaises(KiwoomError):
+            api.get_us_balance()
+
+    def test_camel_case_return_code_accepted(self):
+        api, _ = self.make_api({"ka10001": {"returnCode": 0, "cur_prc": "1000"}})
+        self.assertEqual(api.get_kr_price("005930"), 1000)
+
     def test_business_error_raises(self):
         api, _ = self.make_api({"ka10001": {"return_code": 1902, "return_msg": "종목 정보가 없습니다"}})
         with self.assertRaises(KiwoomError):
@@ -396,11 +411,14 @@ class OverseasTest(KiwoomTestCase):
         api, session = self.make_api({
             "ust21070": ok(result_list=rows),
             "usa10098": ok(list=[{"stex_tp": "ND", "stk_cd": "TQQQ"}]),
-            "ust31490": ok(ord_alowa="16072427.01", min_ord_alowa="18666197.34", crnc_code="USD"),
+            "ust31490": ok(ord_alowa="16072427.01", min_tdy_rebuy_alowa="1993584.88",
+                           min_pred_rebuy_alowa="0.00", min_ord_alowa="18666197.34",
+                           krw_entra="000923780186", crnc_code="USD"),
         })
         holdings, cash = api.get_us_balance()
         self.assertEqual(holdings, {"TQQQ": {"qty": 395, "avg_price": 282.1603}})
-        self.assertEqual(cash, 16072427.01)
+        # 주문가능현금 + 미결제 매도대금(재사용), 원화 환산분(min_ord_alowa 차액)은 제외
+        self.assertAlmostEqual(cash, 16072427.01 + 1993584.88, places=2)
         self.assertEqual(session.bodies("ust21070")[0], {"stex_tp": "", "stk_cd": ""})
         self.assertEqual(session.bodies("ust31490")[0], {"stex_tp": "ND", "stk_cd": "TQQQ", "uv": "275.24"})
         self.assertEqual(session.count("usa20100"), 0)   # 보유종목 현재가 재사용
@@ -411,11 +429,14 @@ class OverseasTest(KiwoomTestCase):
                                          "frgn_stk_book_uv": "50", "now_pric": "51"}]),
             "usa10098": ok(list=[{"stex_tp": "ND", "stk_cd": "TQQQ"}]),
             "ust31490": {"return_code": 8104, "return_msg": "모의투자에서 지원하지 않는 API 입니다."},
+            "ust21160": ok(d0_usd_fx_entr="1234.560", d1_usd_fx_entr="1040.120",
+                           d2_usd_fx_entr="1840.120", d3_usd_fx_entr="", d4_usd_fx_entr=""),
             "ust21110": ok(result_list=[
                 {"crnc_code": "GBP", "fc_entra": "5.00"},
                 {"crnc_code": "USD", "fc_entra": "1234.56", "fc_pymn_alowa": "1000.00"}]),
         })
-        self.assertEqual(api.get_us_balance()[1], 1234.56)
+        # 누적 버킷의 마지막 값(D2)이 미결제 매수·매도를 모두 반영
+        self.assertEqual(api.get_us_balance()[1], 1840.12)
         self.assertEqual(api.get_us_drwg_amt(), 1000.00)
 
     def test_us_balance_failure_raises(self):

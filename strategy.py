@@ -23,7 +23,7 @@ from config_manager import (
     normalize_kr_ticker
 )
 from notifier import (
-    notify_buy, notify_sell,
+    notify_buy, notify_sell, notify_error,
     notify_monthly_increase, notify_cycle_complete
 )
 from reporter import save_report
@@ -36,9 +36,10 @@ logger = logging.getLogger(__name__)
 # ════════════════════════════════════════════
 
 def execute_gbv(kis, ticker: str, price: float, base_value: float,
-                outside_tqqq: int, is_us: bool) -> tuple:
+                outside_tqqq: int, is_us: bool, attempted: list = None) -> tuple:
     """
     GBV 리밸런싱
+    attempted: 주문을 전송한 종목을 기록할 리스트 (성공 여부와 무관, 타임아웃 포함)
     Returns: (trades, new_holdings, new_cash)
     """
     trades = []
@@ -67,6 +68,8 @@ def execute_gbv(kis, ticker: str, price: float, base_value: float,
             buy_qty = int(abs(diff) / (price * 1.0015))
             if buy_qty > 0:
                 logger.info(f"GBV매수: {ticker} {buy_qty}주 @ ${price:.2f}")
+                if attempted is not None:
+                    attempted.append(ticker)
                 if is_us:
                     success = kis.buy_us(ticker, buy_qty)
                 else:
@@ -83,6 +86,8 @@ def execute_gbv(kis, ticker: str, price: float, base_value: float,
             sell_qty = min(int(abs(diff) / price), current_qty)
             if sell_qty > 0:
                 logger.info(f"GBV매도: {ticker} {sell_qty}주 @ ${price:.2f}")
+                if attempted is not None:
+                    attempted.append(ticker)
                 if is_us:
                     success = kis.sell_us(ticker, sell_qty)
                 else:
@@ -96,12 +101,34 @@ def execute_gbv(kis, ticker: str, price: float, base_value: float,
                     notify_sell(ticker, sell_qty, price)
     
     # 매매 후 최신 잔고 반환 (체결 반영 대기)
-    if trades:
-        time.sleep(SETTLEMENT_WAIT_SEC)
-    if is_us:
-        return trades, *kis.get_us_balance()
-    else:
-        return trades, *kis.get_kr_balance()
+    if not trades:
+        return trades, holdings, cash
+    time.sleep(SETTLEMENT_WAIT_SEC)
+    try:
+        if is_us:
+            return trades, *kis.get_us_balance()
+        else:
+            return trades, *kis.get_kr_balance()
+    except Exception as e:
+        # 주문은 이미 나갔으므로 여기서 실패해도 사이클을 중단하지 않는다
+        logger.warning(f"매매 후 잔고 재조회 실패 ({ticker}), 매매 전 잔고 사용: {e}")
+        return trades, holdings, cash
+
+
+def _stop_after_orders(market: str, attempted: list, exc: Exception):
+    """
+    사이클 도중 오류 처리
+    - 아직 주문을 보내지 않았으면 예외를 다시 올려 main이 재시도하게 한다
+    - 이미 주문을 보냈으면 재시도 시 같은 주문이 중복되므로 여기서 사이클을 끝낸다
+    """
+    if not attempted:
+        raise exc
+    logger.error(f"{market} 주문 전송 후 오류 - 재시도하지 않음: {exc}", exc_info=exc)
+    notify_error(
+        f"{market} 매매 도중 오류 (주문 전송: {', '.join(attempted)})\n"
+        f"{exc}\n"
+        f"※ 중복 주문 방지를 위해 오늘 {market} 매매는 재시도하지 않습니다. 잔고를 확인하세요."
+    )
 
 
 # ════════════════════════════════════════════
@@ -171,49 +198,53 @@ def run_us_strategy(kis):
     logger.info(f"달러 현금: ${cash_usd:,.2f} | 잔고: {holdings}")
     
     all_trades = []
+    attempted = []   # 주문을 전송한 종목 (오류 시 재시도 여부 판단)
     
-    # ═══ GBV 실행 ═══
-    for ticker in all_us_tickers.keys():
-        base = get_base_value(config, ticker)
-        trades, holdings, cash_usd = execute_gbv(
-            kis, ticker, prices[ticker], base,
-            outside_tqqq, is_us=True
+    try:
+        # ═══ GBV 실행 ═══
+        for ticker in all_us_tickers.keys():
+            base = get_base_value(config, ticker)
+            trades, holdings, cash_usd = execute_gbv(
+                kis, ticker, prices[ticker], base,
+                outside_tqqq, is_us=True, attempted=attempted
+            )
+            all_trades.extend(trades)
+    
+        # 최종 잔고 및 총 자산 계산 (마지막 종목 체결 반영 대기)
+        if all_trades:
+            time.sleep(SETTLEMENT_WAIT_SEC)
+        holdings, cash_usd = kis.get_us_balance()
+        total_assets = cash_usd
+        for ticker, info in holdings.items():
+            total_assets += info["qty"] * prices.get(ticker, 0)
+        total_assets += outside_tqqq * prices.get("TQQQ", 0)
+    
+        # 원화 환산
+        usd_krw_rate = kis.get_usd_krw_rate()
+        total_krw = total_assets * usd_krw_rate
+    
+        # 리포트 저장
+        tqqq_base = get_base_value(config, "TQQQ")
+        save_report(
+            market="미국장",
+            trades=all_trades,
+            holdings=holdings,
+            cash=cash_usd,
+            total_assets=total_assets,
+            tqqq_base=tqqq_base,
+            prices=prices,
+            currency="USD",
+            total_assets_krw=total_krw,
+            usd_krw_rate=usd_krw_rate
         )
-        all_trades.extend(trades)
     
-    # 최종 잔고 및 총 자산 계산 (마지막 종목 체결 반영 대기)
-    if all_trades:
-        time.sleep(SETTLEMENT_WAIT_SEC)
-    holdings, cash_usd = kis.get_us_balance()
-    total_assets = cash_usd
-    for ticker, info in holdings.items():
-        total_assets += info["qty"] * prices.get(ticker, 0)
-    total_assets += outside_tqqq * prices.get("TQQQ", 0)
+        # 완료 알림
+        notify_cycle_complete("미국장", all_trades, holdings, cash_usd, 
+                             total_assets, prices, outside_tqqq)
     
-    # 원화 환산
-    usd_krw_rate = kis.get_usd_krw_rate()
-    total_krw = total_assets * usd_krw_rate
-    
-    # 리포트 저장
-    tqqq_base = get_base_value(config, "TQQQ")
-    save_report(
-        market="미국장",
-        trades=all_trades,
-        holdings=holdings,
-        cash=cash_usd,
-        total_assets=total_assets,
-        tqqq_base=tqqq_base,
-        prices=prices,
-        currency="USD",
-        total_assets_krw=total_krw,
-        usd_krw_rate=usd_krw_rate
-    )
-    
-    # 완료 알림
-    notify_cycle_complete("미국장", all_trades, holdings, cash_usd, 
-                         total_assets, prices, outside_tqqq)
-    
-    logger.info("━━━ 미국장 매매 완료 ━━━")
+        logger.info("━━━ 미국장 매매 완료 ━━━")
+    except Exception as e:
+        _stop_after_orders("미국장", attempted, e)
 
 
 # ════════════════════════════════════════════
@@ -253,38 +284,42 @@ def run_kr_strategy(kis):
     logger.info(f"원화 현금: ₩{int(cash_krw):,} | 잔고: {holdings}")
     
     all_trades = []
+    attempted = []   # 주문을 전송한 종목 (오류 시 재시도 여부 판단)
     
-    # ═══ GBV 실행 ═══
-    for ticker in all_kr_tickers.keys():
-        base = get_base_value(config, ticker)
-        trades, holdings, cash_krw = execute_gbv(
-            kis, ticker, prices[ticker], base,
-            0, is_us=False
+    try:
+        # ═══ GBV 실행 ═══
+        for ticker in all_kr_tickers.keys():
+            base = get_base_value(config, ticker)
+            trades, holdings, cash_krw = execute_gbv(
+                kis, ticker, prices[ticker], base,
+                0, is_us=False, attempted=attempted
+            )
+            all_trades.extend(trades)
+    
+        # 최종 잔고 및 총 자산 (마지막 종목 체결 반영 대기)
+        if all_trades:
+            time.sleep(SETTLEMENT_WAIT_SEC)
+        holdings, cash_krw = kis.get_kr_balance()
+        total_assets = cash_krw
+        for ticker, info in holdings.items():
+            total_assets += info["qty"] * prices.get(ticker, 0)
+    
+        # 리포트 저장
+        save_report(
+            market="국내장",
+            trades=all_trades,
+            holdings=holdings,
+            cash=cash_krw,
+            total_assets=total_assets,
+            tqqq_base=0,
+            prices=prices,
+            currency="KRW"
         )
-        all_trades.extend(trades)
     
-    # 최종 잔고 및 총 자산 (마지막 종목 체결 반영 대기)
-    if all_trades:
-        time.sleep(SETTLEMENT_WAIT_SEC)
-    holdings, cash_krw = kis.get_kr_balance()
-    total_assets = cash_krw
-    for ticker, info in holdings.items():
-        total_assets += info["qty"] * prices.get(ticker, 0)
+        # 완료 알림
+        notify_cycle_complete("국내장", all_trades, holdings, cash_krw,
+                             total_assets, prices, 0)
     
-    # 리포트 저장
-    save_report(
-        market="국내장",
-        trades=all_trades,
-        holdings=holdings,
-        cash=cash_krw,
-        total_assets=total_assets,
-        tqqq_base=0,
-        prices=prices,
-        currency="KRW"
-    )
-    
-    # 완료 알림
-    notify_cycle_complete("국내장", all_trades, holdings, cash_krw,
-                         total_assets, prices, 0)
-    
-    logger.info("━━━ 국내장 매매 완료 ━━━")
+        logger.info("━━━ 국내장 매매 완료 ━━━")
+    except Exception as e:
+        _stop_after_orders("국내장", attempted, e)

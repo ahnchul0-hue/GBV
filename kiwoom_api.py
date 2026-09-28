@@ -87,8 +87,8 @@ def _price(value) -> float:
 
 
 def _return_code(data: dict):
-    """return_code는 int 또는 "0", "0000" 같은 숫자 문자열로 온다"""
-    value = data.get("return_code")
+    """return_code는 int 또는 "0", "0000" 같은 숫자 문자열로 온다 (일부 TR은 returnCode)"""
+    value = data.get("return_code", data.get("returnCode"))
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, int):
@@ -312,12 +312,14 @@ class KiwoomAPI:
                     time.sleep(1.0 * rate_retries)
                     continue
 
-            if res.status_code >= 400 or code not in (None, 0):
-                raise KiwoomError(
-                    api_id,
-                    embedded or code or res.status_code,
-                    str(data.get("return_msg") or f"HTTP {res.status_code}")
-                )
+            if res.status_code >= 400 or code != 0:
+                # return_code가 없거나 JSON이 아닌 응답(점검 페이지 등)도 실패로 처리한다.
+                # 성공으로 보면 잔고가 '보유 0주'로 읽혀 전량 매수가 나갈 수 있다.
+                if code is None and res.status_code < 400:
+                    message = "응답에 return_code가 없거나 JSON 형식이 아닙니다"
+                else:
+                    message = str(data.get("return_msg") or f"HTTP {res.status_code}")
+                raise KiwoomError(api_id, embedded or code or res.status_code, message)
             return data, res.headers
 
     def _call(self, api_id: str, path: str, body: dict) -> dict:
@@ -595,10 +597,12 @@ class KiwoomAPI:
 
     def _get_us_orderable_cash(self, ref_ticker: str = None, ref_price: float = 0.0) -> float:
         """
-        달러 주문가능현금 (ust31490 ord_alowa)
+        달러 주문가능현금 (ust31490)
+        = ord_alowa(주문가능현금) + min_tdy_rebuy_alowa(금일재사용) + min_pred_rebuy_alowa(전일재사용)
         - 증거금(미수)·원화 환산분이 섞이지 않은 순수 달러 현금 (달러/원화 완전 분리)
+        - 재사용금액(미결제 매도대금)을 더해 매도 당일 총자산이 줄어 보이지 않게 함
         - ust31490은 종목·가격이 필수라 보유 종목(없으면 AAPL)을 기준으로 조회
-        - 실패 시(모의투자 미지원 등) ust21110 외화예수금으로 대체
+        - 실패 시(모의투자 미지원 등) ust21160 결제 반영 외화예수금으로 대체
         """
         try:
             ticker = ref_ticker or "AAPL"
@@ -609,16 +613,22 @@ class KiwoomAPI:
                 "stk_cd":  ticker,
                 "uv":      f"{price:.2f}",
             })
-            cash = _num(data.get("ord_alowa"))
+            cash = (_num(data.get("ord_alowa"))
+                    + _num(data.get("min_tdy_rebuy_alowa"))
+                    + _num(data.get("min_pred_rebuy_alowa")))
             logger.info(f"달러 주문가능금액: ${cash:,.2f}")
             return cash
         except Exception as e:
-            logger.warning(f"달러 주문가능금액(ust31490) 조회 실패, 외화예수금으로 대체: {e}")
+            logger.warning(f"달러 주문가능금액(ust31490) 조회 실패, 예수금 상세로 대체: {e}")
         try:
-            usd = self._us_deposit_row()
-            cash = _num(usd.get("fc_entra"))
-            logger.info(f"달러 외화예수금: ${cash:,.2f}")
-            return cash
+            data = self._call("ust21160", "/api/us/acnt", {})
+            # dN_usd_fx_entr는 누적(D1 = D0 + D1 정산금 ...)이라 마지막 값이 미결제 매수·매도를 모두 반영
+            for key in ("d4_usd_fx_entr", "d3_usd_fx_entr", "d2_usd_fx_entr",
+                        "d1_usd_fx_entr", "d0_usd_fx_entr"):
+                if str(data.get(key) or "").strip():
+                    cash = _num(data.get(key))
+                    logger.info(f"달러 예수금({key}): ${cash:,.2f}")
+                    return cash
         except Exception as e:
             logger.error(f"달러 주문가능금액 조회 실패: {e}")
         return 0.0
