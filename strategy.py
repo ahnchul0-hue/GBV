@@ -27,6 +27,7 @@ from notifier import (
     notify_monthly_increase, notify_cycle_complete
 )
 from reporter import save_report
+from trade_state import mark_traded
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +69,7 @@ def execute_gbv(api, ticker: str, price: float, base_value: float,
             buy_qty = int(abs(diff) / (price * 1.0015))
             if buy_qty > 0:
                 logger.info(f"GBV매수: {ticker} {buy_qty}주 @ ${price:.2f}")
-                if attempted is not None:
-                    attempted.append(ticker)
+                _record_attempt(ticker, is_us, attempted)
                 if is_us:
                     success = api.buy_us(ticker, buy_qty)
                 else:
@@ -86,8 +86,7 @@ def execute_gbv(api, ticker: str, price: float, base_value: float,
             sell_qty = min(int(abs(diff) / price), current_qty)
             if sell_qty > 0:
                 logger.info(f"GBV매도: {ticker} {sell_qty}주 @ ${price:.2f}")
-                if attempted is not None:
-                    attempted.append(ticker)
+                _record_attempt(ticker, is_us, attempted)
                 if is_us:
                     success = api.sell_us(ticker, sell_qty)
                 else:
@@ -115,6 +114,27 @@ def execute_gbv(api, ticker: str, price: float, base_value: float,
         return trades, holdings, cash
 
 
+def _record_attempt(ticker: str, is_us: bool, attempted: list = None):
+    """
+    주문 전송 직전 기록
+    - attempted: 이번 사이클에서 주문을 보낸 종목 (오류 시 재시도 여부 판단)
+    - trade_state: 오늘 이 시장을 매매했다는 파일 기록 (봇 재시작 후 중복 주문 방지)
+    """
+    if attempted is not None:
+        attempted.append(ticker)
+    mark_traded("us" if is_us else "kr")
+
+
+def _skip_for_price_failure(market: str, ticker: str, exc: Exception):
+    """현재가를 못 받으면 오늘 매매를 건너뛰고 텔레그램으로 알린다"""
+    logger.error(f"현재가 조회 실패 ({ticker}): {exc}")
+    notify_error(
+        f"{market} {ticker} 현재가 조회 실패\n"
+        f"{exc}\n"
+        f"※ 오늘 {market} 매매를 건너뜁니다. 주문은 나가지 않았습니다."
+    )
+
+
 def _stop_after_orders(market: str, attempted: list, exc: Exception):
     """
     사이클 도중 오류 처리
@@ -135,13 +155,14 @@ def _stop_after_orders(market: str, attempted: list, exc: Exception):
 # 월 증액
 # ════════════════════════════════════════════
 
-def handle_monthly_increase(config: dict, all_tickers: dict) -> dict:
+def handle_monthly_increase(config: dict, all_tickers: dict, market: str) -> dict:
     """
-    모든 종목 월 증액
+    시장(market: "us" / "kr")의 모든 종목 월 증액
+    증액 기록은 시장별로 따로 남긴다 (국내장 증액이 미국장 증액을 막지 않도록)
     Returns: {ticker: (old_base, new_base)}
     """
     this_month = date.today().strftime("%Y-%m")
-    last_month = get_last_increased_month(config)
+    last_month = get_last_increased_month(config, market)
     
     if this_month == last_month:
         return {}
@@ -160,7 +181,7 @@ def handle_monthly_increase(config: dict, all_tickers: dict) -> dict:
             logger.info(f"월 증액: {ticker} ${old_base:.2f} → ${new_base:.2f}")
     
     if increases:
-        update_monthly_increase_date()
+        update_monthly_increase_date(market)
         notify_monthly_increase(increases)
     
     return increases
@@ -180,7 +201,7 @@ def run_us_strategy(api):
     outside_tqqq = get_outside_tqqq(config)
     
     # 월 증액
-    handle_monthly_increase(config, all_us_tickers)
+    handle_monthly_increase(config, all_us_tickers, "us")
     config = load_config()  # 증액 후 재로드
     
     # 현재가 조회
@@ -190,7 +211,7 @@ def run_us_strategy(api):
             prices[ticker] = api.get_us_price(ticker)
             logger.info(f"{ticker} 현재가: ${prices[ticker]:,.2f}")
         except Exception as e:
-            logger.error(f"현재가 조회 실패 ({ticker}): {e}")
+            _skip_for_price_failure("미국장", ticker, e)
             return
     
     # 잔고 조회
@@ -264,7 +285,7 @@ def run_kr_strategy(api):
         return
     
     # 월 증액
-    handle_monthly_increase(config, all_kr_tickers)
+    handle_monthly_increase(config, all_kr_tickers, "kr")
     config = load_config()
     
     # 현재가 조회
@@ -276,7 +297,7 @@ def run_kr_strategy(api):
             prices.setdefault(normalize_kr_ticker(ticker), prices[ticker])
             logger.info(f"{ticker} 현재가: ₩{int(prices[ticker]):,}")
         except Exception as e:
-            logger.error(f"현재가 조회 실패 ({ticker}): {e}")
+            _skip_for_price_failure("국내장", ticker, e)
             return
     
     # 잔고 조회

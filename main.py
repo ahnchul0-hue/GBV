@@ -16,6 +16,7 @@ from config_manager import (
 )
 from broker import get_broker, validate_api_info, describe_broker
 from strategy import run_us_strategy, run_kr_strategy
+import trade_state
 from notifier import notify_error, _send
 from telegram_handler import start_polling
 
@@ -176,8 +177,10 @@ def main():
     logger.info("텔레그램 폴링 시작")
     
     # ── 매매 플래그 및 설정 ──
-    already_traded_us = False
-    already_traded_kr = False
+    # '오늘 매매했는지'는 trade_state.json 파일에 기록 (재시작해도 유지)
+    for market, label in (("us", "미국장"), ("kr", "국내장")):
+        if trade_state.traded_today(market):
+            logger.info(f"{label}: 오늘 이미 매매함 (trade_state.json) → 오늘은 다시 매매하지 않음")
     us_pre_notified_today = None
     kr_pre_notified_today = None
     prev_us_time = None
@@ -203,7 +206,7 @@ def main():
             
             # ── 매매 시간 변경 감지 ──
             if prev_us_time and us_time != prev_us_time:
-                already_traded_us = False
+                trade_state.clear_today("us")
                 logger.info(f"미국장 매매 시간 변경: {prev_us_time} → {us_time} (플래그 리셋)")
                 _send(
                     f"⏰ [GBV] 매매 시간 변경\n"
@@ -212,7 +215,7 @@ def main():
                 )
             
             if prev_kr_time and kr_time != prev_kr_time:
-                already_traded_kr = False
+                trade_state.clear_today("kr")
                 logger.info(f"국내장 매매 시간 변경: {prev_kr_time} → {kr_time} (플래그 리셋)")
                 _send(
                     f"⏰ [GBV] 매매 시간 변경\n"
@@ -241,32 +244,24 @@ def main():
                 kr_pre_notified_today = today_str
             
             # ── 미국장 매매 ──
-            if _is_target_time(us_time) and not already_traded_us:
+            if _is_target_time(us_time) and not trade_state.traded_today("us"):
                 logger.info(f"미국장 매매 시간 도달: {us_time}")
                 try:
                     run_us_strategy(api)
-                    already_traded_us = True
+                    trade_state.mark_traded("us")
                 except Exception as e:
                     logger.error(f"미국장 매매 중 에러: {e}", exc_info=True)
                     notify_error(f"미국장 매매 에러:\n{str(e)}")
             
             # ── 국내장 매매 ──
-            if _is_target_time(kr_time) and not already_traded_kr:
+            if _is_target_time(kr_time) and not trade_state.traded_today("kr"):
                 logger.info(f"국내장 매매 시간 도달: {kr_time}")
                 try:
                     run_kr_strategy(api)
-                    already_traded_kr = True
+                    trade_state.mark_traded("kr")
                 except Exception as e:
                     logger.error(f"국내장 매매 중 에러: {e}", exc_info=True)
                     notify_error(f"국내장 매매 에러:\n{str(e)}")
-            
-            # ── 자정 지나면 플래그 리셋 ──
-            now = datetime.now()
-            if now.hour == 0 and now.minute < 10:
-                if already_traded_us or already_traded_kr:
-                    already_traded_us = False
-                    already_traded_kr = False
-                    logger.info("자정 지남 → 매매 플래그 리셋")
             
             time.sleep(LOOP_INTERVAL_SEC)
     
