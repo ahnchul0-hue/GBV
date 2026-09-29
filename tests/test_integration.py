@@ -601,3 +601,62 @@ class BotStatusTest(unittest.TestCase):
             sent = main._maybe_send_heartbeat(sent)
         self.assertEqual(sent, "2026-10-03")
         send.assert_called_once_with("ok")
+
+
+# ─────────────────────────────────────────
+# 텔레그램 폴링 종료
+# ─────────────────────────────────────────
+
+class TelegramShutdownTest(unittest.TestCase):
+    """stop_polling() 이 진행 중인 long-poll 을 깨우는지 확인.
+
+    stop_event 만 쓰던 시절에는 polling() 이 끝날 때까지 스레드가 살아 있어
+    main 의 join(timeout) 이 매번 만료됐다.
+    """
+
+    def _run(self, use_stop_polling):
+        import threading
+        import telegram_handler
+
+        in_poll = threading.Event()
+        wake    = threading.Event()
+
+        class FakeBot:
+            def polling(self, **kwargs):
+                in_poll.set()
+                wake.wait(10)        # 실제 long-poll 을 흉내
+                wake.clear()
+
+            def stop_polling(self):
+                wake.set()
+
+        stop_event = threading.Event()
+        with mock.patch.object(telegram_handler, "telebot") as tb, \
+             mock.patch.object(telegram_handler, "get_telegram_settings",
+                               return_value=("TOKEN", "12345")), \
+             mock.patch.object(telegram_handler, "setup_handlers"), \
+             mock.patch.object(telegram_handler, "_add_stranger_guard"):
+            tb.TeleBot.return_value = FakeBot()
+            t = threading.Thread(target=telegram_handler.start_polling,
+                                 args=(stop_event,), daemon=True)
+            t.start()
+            self.assertTrue(in_poll.wait(5), "폴링이 시작되지 않음")
+
+            stop_event.set()
+            if use_stop_polling:
+                telegram_handler.stop_polling()
+            t.join(timeout=2)
+            alive = t.is_alive()
+
+        wake.set()               # 남은 스레드 정리
+        telegram_handler._bot = None
+        return alive
+
+    def test_stop_polling_wakes_the_thread(self):
+        self.assertFalse(self._run(use_stop_polling=True),
+                         "stop_polling() 을 불렀는데도 스레드가 남아 있음")
+
+    def test_stop_event_alone_leaves_thread_blocked(self):
+        # 수정 전 동작 재현: 이벤트만 세팅하면 long-poll 이 끝날 때까지 안 멈춘다
+        self.assertTrue(self._run(use_stop_polling=False),
+                        "stop_event 만으로 멈췄다면 이 테스트의 전제가 틀린 것")

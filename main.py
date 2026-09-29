@@ -20,7 +20,7 @@ from strategy import run_us_strategy, run_kr_strategy
 import trade_state
 from market_calendar import is_trading_day, holiday_name
 from notifier import notify_error, _send
-from telegram_handler import start_polling
+from telegram_handler import start_polling, stop_polling as stop_telegram_polling
 
 # ─────────────────────────────────────────
 # 로그 설정
@@ -350,7 +350,10 @@ def main():
     except KeyboardInterrupt:
         logger.info("사용자 종료 요청")
         stop_event.set()
-        telegram_thread.join(timeout=5)
+        stop_telegram_polling()   # 진행 중인 long-poll 을 깨운다
+        telegram_thread.join(timeout=8)
+        if telegram_thread.is_alive():
+            logger.warning("텔레그램 스레드가 제때 종료되지 않아 두고 종료합니다")
         logger.info("프로그램 종료")
 
 

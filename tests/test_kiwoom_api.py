@@ -439,6 +439,22 @@ class OverseasTest(KiwoomTestCase):
         self.assertEqual(api.get_us_balance()[1], 1840.12)
         self.assertEqual(api.get_us_drwg_amt(), 1000.00)
 
+    def test_us_cash_skips_unsupported_api_in_demo(self):
+        """모의투자에서는 ust31490 과 거래소 감지(usa10098)를 아예 호출하지 않는다.
+
+        routes 에 없는 api-id 를 부르면 FakeSession 이 AssertionError 를 내므로,
+        아래 라우트만으로 통과한다는 것 자체가 호출이 없었다는 증거다.
+        """
+        api, session = self.make_api({
+            "ust21070": ok(result_list=[{"crnc_code": "USD", "stk_cd": "TQQQ", "poss_qty": "1",
+                                         "frgn_stk_book_uv": "50", "now_pric": "51"}]),
+            "ust21160": ok(d0_usd_fx_entr="1234.560", d1_usd_fx_entr="", d2_usd_fx_entr="",
+                           d3_usd_fx_entr="", d4_usd_fx_entr=""),
+        }, mode="demo")
+        self.assertEqual(api.get_us_balance()[1], 1234.56)
+        self.assertEqual(session.count("ust31490"), 0)
+        self.assertEqual(session.count("usa10098"), 0)
+
     def test_us_balance_failure_raises(self):
         api, _ = self.make_api({"ust21070": {"return_code": 1999, "return_msg": "오류"}})
         with self.assertRaises(KiwoomError):

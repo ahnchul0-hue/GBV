@@ -412,6 +412,19 @@ def _add_stranger_guard(bot):
         logger.warning(f"허가되지 않은 채팅의 명령 무시: chat_id={message.chat.id} user={user} text={message.text!r}")
 
 
+def stop_polling():
+    """진행 중인 long-poll 을 깨워 폴링 루프를 빠져나오게 한다.
+
+    stop_event 는 polling() 호출 *사이*에서만 확인되므로, 이것만으로는
+    long-poll 이 끝날 때까지 스레드가 멈추지 않는다. 종료 시 함께 호출한다.
+    """
+    if _bot is not None:
+        try:
+            _bot.stop_polling()
+        except Exception as e:
+            logger.warning(f"텔레그램 폴링 중단 실패: {e}")
+
+
 def start_polling(stop_event):
     """텔레그램 봇 폴링 시작"""
     global _bot
@@ -431,7 +444,9 @@ def start_polling(stop_event):
         logger.info("텔레그램 폴링 시작...")
         while not stop_event.is_set():
             try:
-                _bot.polling(none_stop=False, timeout=10)
+                # long_polling_timeout 기본값은 20초인데 timeout(HTTP)이 10초라
+                # 매번 요청이 먼저 끊겼다. 짧게 잡아 종료 신호에도 빨리 반응한다.
+                _bot.polling(none_stop=False, timeout=10, long_polling_timeout=5)
             except Exception as e:
                 logger.error(f"폴링 오류: {e}")
                 if stop_event.is_set():

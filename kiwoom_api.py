@@ -630,8 +630,12 @@ class KiwoomAPI:
         - 증거금(미수)·원화 환산분이 섞이지 않은 순수 달러 현금 (달러/원화 완전 분리)
         - 재사용금액(미결제 매도대금)을 더해 매도 당일 총자산이 줄어 보이지 않게 함
         - ust31490은 종목·가격이 필수라 보유 종목(없으면 AAPL)을 기준으로 조회
-        - 실패 시(모의투자 미지원 등) ust21160 결제 반영 외화예수금으로 대체
+        - 모의투자는 ust31490 자체를 지원하지 않으므로(RC9000) 시도하지 않고
+          바로 ust21160 으로 간다. 시도하면 거래소 감지·시세 조회까지 함께 버려진다.
+        - 실패 시(권한 없음 등) ust21160 결제 반영 외화예수금으로 대체
         """
+        if self.mode == "demo":
+            return self._get_us_deposit_cash()
         try:
             ticker = ref_ticker or "AAPL"
             price  = ref_price if ref_price > 0 else self.get_us_price(ticker)
@@ -648,6 +652,10 @@ class KiwoomAPI:
             return cash
         except Exception as e:
             logger.warning(f"달러 주문가능금액(ust31490) 조회 실패, 예수금 상세로 대체: {e}")
+        return self._get_us_deposit_cash()
+
+    def _get_us_deposit_cash(self) -> float:
+        """ust21160 결제 반영 외화예수금 (ust31490 대체용)"""
         try:
             data = self._call("ust21160", "/api/us/acnt", {})
             # dN_usd_fx_entr는 누적(D1 = D0 + D1 정산금 ...)이라 마지막 값이 미결제 매수·매도를 모두 반영
