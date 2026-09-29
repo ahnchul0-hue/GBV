@@ -23,7 +23,7 @@ from config_manager import (
 )
 from market_calendar import is_trading_day
 from notifier import (
-    notify_buy, notify_sell, notify_error,
+    notify_buy, notify_sell, notify_error, notify_order_failed,
     notify_monthly_increase, notify_cycle_complete
 )
 from reporter import save_report
@@ -68,7 +68,7 @@ def execute_gbv(api, ticker: str, price: float, base_value: float,
             # 매수 (수수료 0.15% 감안)
             buy_qty = int(abs(diff) / (price * 1.0015))
             if buy_qty > 0:
-                logger.info(f"GBV매수: {ticker} {buy_qty}주 @ ${price:.2f}")
+                logger.info(f"GBV매수: {ticker} {buy_qty}주 @ {price:,.2f}")
                 _record_attempt(ticker, is_us, attempted)
                 if is_us:
                     success = api.buy_us(ticker, buy_qty)
@@ -80,12 +80,15 @@ def execute_gbv(api, ticker: str, price: float, base_value: float,
                         "action": "매수", "ticker": ticker,
                         "qty": buy_qty, "price": price
                     })
-                    notify_buy(ticker, buy_qty, price)
+                    notify_buy(ticker, buy_qty, price, is_us)
+                else:
+                    notify_order_failed("매수", ticker, buy_qty, price, is_us,
+                                        getattr(api, "last_order_error", ""))
         else:
             # 매도 (OUTSIDE 제외)
             sell_qty = min(int(abs(diff) / price), current_qty)
             if sell_qty > 0:
-                logger.info(f"GBV매도: {ticker} {sell_qty}주 @ ${price:.2f}")
+                logger.info(f"GBV매도: {ticker} {sell_qty}주 @ {price:,.2f}")
                 _record_attempt(ticker, is_us, attempted)
                 if is_us:
                     success = api.sell_us(ticker, sell_qty)
@@ -97,7 +100,10 @@ def execute_gbv(api, ticker: str, price: float, base_value: float,
                         "action": "매도", "ticker": ticker,
                         "qty": sell_qty, "price": price
                     })
-                    notify_sell(ticker, sell_qty, price)
+                    notify_sell(ticker, sell_qty, price, is_us)
+                else:
+                    notify_order_failed("매도", ticker, sell_qty, price, is_us,
+                                        getattr(api, "last_order_error", ""))
     
     # 매매 후 최신 잔고 반환 (체결 반영 대기)
     if not trades:
@@ -203,7 +209,7 @@ def handle_monthly_increase(config: dict, all_tickers: dict, market: str) -> dic
     
     if increases:
         update_monthly_increase_date(market)
-        notify_monthly_increase(increases)
+        notify_monthly_increase(increases, is_us=(market == "us"))
     
     return increases
 
