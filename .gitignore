@@ -13,3 +13,7 @@ reports/
 __pycache__/
 *.pyc
 .venv/
+
+# 실제 설정 (API 키·텔레그램 토큰 포함 - 절대 커밋 금지)
+# 새로 설정할 때는 config.txt.example 을 복사해서 사용하세요
+config.txt

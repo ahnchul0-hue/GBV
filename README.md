@@ -2,7 +2,8 @@
 
 ## 키움증권 REST API 설정
 
-`config.txt`에 키움 앱키를 입력합니다.
+`config.txt.example`을 `config.txt`로 복사한 뒤 키움 앱키를 입력합니다.
+(`config.txt`는 실제 키가 들어가므로 git에 올라가지 않습니다.)
 
 ```
 kiwoom_mode = real       # real(실전) 또는 demo(모의투자)
