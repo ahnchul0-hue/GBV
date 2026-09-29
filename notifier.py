@@ -36,21 +36,34 @@ def _send(message: str):
         logger.error(f"텔레그램 전송 오류: {e}")
 
 
-def notify_buy(ticker: str, qty: int, price: float):
-    """매수 알림"""
-    _send(f"✅ 매수 {ticker} {qty}주 @ ${price:.2f}")
+def _fmt_price(price: float, is_us: bool) -> str:
+    return f"${price:,.2f}" if is_us else f"₩{int(price):,}"
 
 
-def notify_sell(ticker: str, qty: int, price: float):
-    """매도 알림"""
-    _send(f"✅ 매도 {ticker} {qty}주 @ ${price:.2f}")
+def notify_buy(ticker: str, qty: int, price: float, is_us: bool = True):
+    """매수 주문 접수 알림"""
+    _send(f"✅ 매수 주문 {ticker} {qty}주 @ {_fmt_price(price, is_us)}")
 
 
-def notify_monthly_increase(increases: dict):
+def notify_sell(ticker: str, qty: int, price: float, is_us: bool = True):
+    """매도 주문 접수 알림"""
+    _send(f"✅ 매도 주문 {ticker} {qty}주 @ {_fmt_price(price, is_us)}")
+
+
+def notify_order_failed(action: str, ticker: str, qty: int, price: float, is_us: bool, reason: str = ""):
+    """주문 거절·실패 알림"""
+    _send(
+        f"❌ [GBV] {action} 주문 실패 {ticker} {qty}주 @ {_fmt_price(price, is_us)}\n"
+        f"사유: {reason or '알 수 없음 (로그 확인)'}\n"
+        f"※ 오늘은 다시 주문하지 않습니다. 잔고·주문가능금액을 확인하세요."
+    )
+
+
+def notify_monthly_increase(increases: dict, is_us: bool = True):
     """월 증액 알림"""
     lines = ["📈 [GBV] 월 증액"]
     for ticker, (old, new) in increases.items():
-        lines.append(f"{ticker}: ${old:,.2f} → ${new:,.2f}")
+        lines.append(f"{ticker}: {_fmt_price(old, is_us)} → {_fmt_price(new, is_us)}")
     _send("\n".join(lines))
 
 

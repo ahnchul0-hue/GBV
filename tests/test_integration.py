@@ -101,7 +101,7 @@ class FakeBroker:
 class StrategyTest(unittest.TestCase):
 
     def setUp(self):
-        for name in ("notify_buy", "notify_sell", "notify_error", "notify_cycle_complete",
+        for name in ("notify_buy", "notify_sell", "notify_error", "notify_order_failed", "notify_cycle_complete",
                      "save_report", "handle_monthly_increase"):
             patcher = mock.patch.object(strategy, name)
             patcher.start()
@@ -472,3 +472,42 @@ class CheckSetupTest(unittest.TestCase):
             main.main()
         err.assert_called_once()
         thread.assert_not_called()
+
+
+class OrderNotificationTest(unittest.TestCase):
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.object(trade_state, "STATE_FILE", os.path.join(tmp.name, "trade_state.json"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(strategy.time, "sleep")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_rejected_order_is_notified_with_reason(self):
+        broker = FakeBroker({})
+        def reject(ticker, qty, price=0):
+            broker.last_order_error = "주문가능금액이 부족합니다"
+            return False
+        broker.buy_kr = reject
+        with mock.patch("notifier._send") as send:
+            trades, _, _ = strategy.execute_gbv(broker, "418660", 10000, 1000000, 0, is_us=False)
+        self.assertEqual(trades, [])
+        text = send.call_args[0][0]
+        self.assertIn("매수 주문 실패 418660 99주 @ ₩10,000", text)
+        self.assertIn("주문가능금액이 부족합니다", text)
+
+    def test_success_uses_market_currency(self):
+        broker = FakeBroker({})
+        with mock.patch("notifier._send") as send:
+            strategy.execute_gbv(broker, "418660", 10000, 1000000, 0, is_us=False)
+        self.assertEqual(send.call_args_list[0][0][0], "✅ 매수 주문 418660 99주 @ ₩10,000")
+
+    def test_kiwoom_order_failure_keeps_reason(self):
+        from kiwoom_api import KiwoomAPI
+        api = KiwoomAPI.__new__(KiwoomAPI)
+        with mock.patch.object(KiwoomAPI, "_us_order", side_effect=RuntimeError("[2000] 잔고 부족")):
+            self.assertFalse(api.buy_us("TQQQ", 1))
+        self.assertIn("잔고 부족", api.last_order_error)

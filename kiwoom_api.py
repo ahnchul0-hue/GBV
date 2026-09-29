@@ -518,6 +518,7 @@ class KiwoomAPI:
             return self._kr_order("kt10000", "매수", ticker, qty, price, 1.03)
         except Exception as e:
             logger.error(f"국내 매수 실패 ({ticker}): {e}")
+            self.last_order_error = str(e)
             return False
 
     def sell_kr(self, ticker: str, qty: int, price: int = 0) -> bool:
@@ -526,6 +527,7 @@ class KiwoomAPI:
             return self._kr_order("kt10001", "매도", ticker, qty, price, 0.97)
         except Exception as e:
             logger.error(f"국내 매도 실패 ({ticker}): {e}")
+            self.last_order_error = str(e)
             return False
 
     # ─────────────────────────────────────────
@@ -705,6 +707,7 @@ class KiwoomAPI:
             return self._us_order("ust20000", "매수", ticker, qty, price, 1.03)
         except Exception as e:
             logger.error(f"해외 매수 실패 ({ticker}): {e}")
+            self.last_order_error = str(e)
             return False
 
     def sell_us(self, ticker: str, qty: int, price: float = 0) -> bool:
@@ -713,6 +716,7 @@ class KiwoomAPI:
             return self._us_order("ust20001", "매도", ticker, qty, price, 0.97)
         except Exception as e:
             logger.error(f"해외 매도 실패 ({ticker}): {e}")
+            self.last_order_error = str(e)
             return False
 
     def get_us_unfilled(self) -> list:
