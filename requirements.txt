@@ -1,5 +1,6 @@
 requests>=2.28
 pyTelegramBotAPI>=4.0
+holidays>=0.105         # 한국거래소·뉴욕증권거래소 휴장일
 
 # backtest_interactive.py 전용
 yfinance
