@@ -8,16 +8,30 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# 텔레그램 설정 (여기에 입력)
+# 텔레그램 설정: config.txt의 telegram_bot_token / telegram_chat_id 를 우선 사용
+# (config.txt에 없을 때만 아래 값 사용 — 공개 저장소라면 여기엔 입력하지 마세요)
 TELEGRAM_BOT_TOKEN = "XXXXXXXXXXXXXXXXXXXXXXXXX"
 TELEGRAM_CHAT_ID   = "XXXXXXXXXX"
 
 
+def get_telegram_settings() -> tuple:
+    """(bot_token, chat_id) — config.txt 값 우선, 없으면 이 파일의 상수"""
+    try:
+        from config_manager import load_config
+        config = load_config()
+    except Exception:
+        config = {}
+    token = config.get("TELEGRAM_BOT_TOKEN") or TELEGRAM_BOT_TOKEN
+    chat_id = config.get("TELEGRAM_CHAT_ID") or TELEGRAM_CHAT_ID
+    return token, str(chat_id).strip()
+
+
 def _send(message: str):
     """텔레그램 메시지 전송"""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    token, chat_id = get_telegram_settings()
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message}, timeout=10)
+        requests.post(url, json={"chat_id": chat_id, "text": message}, timeout=10)
     except Exception as e:
         logger.error(f"텔레그램 전송 오류: {e}")
 

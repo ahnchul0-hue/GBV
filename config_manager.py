@@ -18,7 +18,8 @@ _RESERVED_KEYS = {
     "APP_KEY", "APP_SECRET", "ACCOUNT_NO", "BROKER", "KIWOOM_MODE",  # BROKER: 이전 설정 호환
     "US_MARKET_TIME", "KR_MARKET_TIME",
     "OUTSIDE_TQQQ", "TRADING_ENABLED", "LAST_INCREASED_MONTH",
-    "LAST_INCREASED_MONTH_US", "LAST_INCREASED_MONTH_KR"
+    "LAST_INCREASED_MONTH_US", "LAST_INCREASED_MONTH_KR",
+    "DRY_RUN", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"
 }
 
 
@@ -144,6 +145,11 @@ def get_monthly_rate(config: dict, ticker: str) -> float:
 def get_outside_tqqq(config: dict) -> int:
     """다른 계좌 TQQQ 수량"""
     return int(config.get("OUTSIDE_TQQQ", 0))
+
+
+def get_dry_run(config: dict) -> bool:
+    """dry_run = true 이면 주문을 보내지 않고 기록·알림만 (봇 재시작 후 적용)"""
+    return config.get("DRY_RUN", "false").strip().lower() == "true"
 
 
 def get_trading_enabled(config: dict) -> bool:

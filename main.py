@@ -12,7 +12,7 @@ import threading
 from datetime import datetime
 
 from config_manager import (
-    load_config, get_market_times, get_trading_enabled
+    load_config, get_market_times, get_trading_enabled, get_dry_run
 )
 from broker import get_broker, validate_api_info, describe_broker
 from strategy import run_us_strategy, run_kr_strategy
@@ -166,6 +166,8 @@ def main():
     
     api = get_broker(config)
     logger.info(f"{describe_broker(config)} 초기화 완료")
+    if get_dry_run(config):
+        _send("🧪 [GBV] 연습 모드(dry_run = true)로 시작합니다. 주문은 보내지 않습니다.")
     
     # ── 텔레그램 백그라운드 시작 ──
     stop_event = threading.Event()

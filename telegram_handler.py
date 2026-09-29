@@ -10,6 +10,8 @@ telegram_handler.py
   /status                         → 전체 설정 조회
   /help                           → 도움말
 
+※ 명령은 telegram_chat_id(주인) 채팅에서 온 것만 처리하고 나머지는 무시한다.
+
 예시:
   /set trading_enabled true
   /set us_market_time 19:00
@@ -25,7 +27,7 @@ from config_manager import (
     load_config, _set_value, _delete_keys,
     get_all_us_tickers, get_all_kr_tickers
 )
-from notifier import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, _send
+from notifier import get_telegram_settings, _send
 
 logger = logging.getLogger(__name__)
 
@@ -33,14 +35,20 @@ logger = logging.getLogger(__name__)
 _bot = None
 
 
+def is_owner(message) -> bool:
+    """주인(telegram_chat_id) 채팅에서 온 메시지인지"""
+    _, chat_id = get_telegram_settings()
+    return bool(chat_id) and str(message.chat.id) == chat_id
+
+
 def setup_handlers(bot):
-    """봇 핸들러 등록"""
+    """봇 핸들러 등록 (모든 명령은 주인 채팅에서만 동작)"""
     
     # 증권사 API 임포트 (지연 임포트)
     from broker import get_broker
     from config_manager import load_config, get_outside_tqqq
     
-    @bot.message_handler(commands=['set'])
+    @bot.message_handler(commands=['set'], func=is_owner)
     def set_value(message):
         """모든 설정값 변경 (시스템 파라미터 + 종목)"""
         try:
@@ -165,7 +173,7 @@ def setup_handlers(bot):
             logger.error(f"set 오류: {e}", exc_info=True)
     
     
-    @bot.message_handler(commands=['balance'])
+    @bot.message_handler(commands=['balance'], func=is_owner)
     def balance(message):
         """계좌 잔고 조회"""
         try:
@@ -231,7 +239,7 @@ def setup_handlers(bot):
             logger.error(f"balance 오류: {e}", exc_info=True)
     
     
-    @bot.message_handler(commands=['add_gbv'])
+    @bot.message_handler(commands=['add_gbv'], func=is_owner)
     def add_gbv(message):
         """GBV 종목 추가"""
         try:
@@ -258,7 +266,7 @@ def setup_handlers(bot):
             logger.error(f"add_gbv 오류: {e}", exc_info=True)
     
     
-    @bot.message_handler(commands=['remove_gbv'])
+    @bot.message_handler(commands=['remove_gbv'], func=is_owner)
     def remove_gbv(message):
         """GBV에서 제거"""
         try:
@@ -287,7 +295,7 @@ def setup_handlers(bot):
             logger.error(f"remove_gbv 오류: {e}", exc_info=True)
     
     
-    @bot.message_handler(commands=['status'])
+    @bot.message_handler(commands=['status'], func=is_owner)
     def status(message):
         """전체 설정 현황"""
         try:
@@ -337,7 +345,7 @@ def setup_handlers(bot):
             logger.error(f"status 오류: {e}", exc_info=True)
     
     
-    @bot.message_handler(commands=['help'])
+    @bot.message_handler(commands=['help'], func=is_owner)
     def help_command(message):
         """도움말"""
         help_text = """commands:
@@ -360,15 +368,28 @@ examples:
         bot.reply_to(message, help_text)
 
 
+def _add_stranger_guard(bot):
+    """주인이 아닌 채팅의 메시지는 무시하고 기록만 남김 (반드시 마지막에 등록)"""
+    @bot.message_handler(func=lambda m: not is_owner(m), content_types=['text'])
+    def ignore_stranger(message):
+        user = getattr(message.from_user, "username", None) or getattr(message.from_user, "id", "?")
+        logger.warning(f"허가되지 않은 채팅의 명령 무시: chat_id={message.chat.id} user={user} text={message.text!r}")
+
+
 def start_polling(stop_event):
     """텔레그램 봇 폴링 시작"""
     global _bot
     
     try:
-        _bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+        token, chat_id = get_telegram_settings()
+        if not chat_id or chat_id.startswith("XXX"):
+            logger.error("telegram_chat_id가 설정되지 않아 텔레그램 명령을 받지 않습니다")
+            return
+        _bot = telebot.TeleBot(token)
         logger.info("텔레그램 봇 초기화 완료")
         
         setup_handlers(_bot)
+        _add_stranger_guard(_bot)
         logger.info("텔레그램 핸들러 등록 완료")
         
         logger.info("텔레그램 폴링 시작...")
