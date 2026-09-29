@@ -884,6 +884,21 @@ class QuietNotificationTest(unittest.TestCase):
         send.assert_called_once()
         self.assertIn("매수 TQQQ 3주", send.call_args[0][0])
 
+    def test_sell_from_zero_cash_account_notifies(self):
+        """현금 0 + 보유 있음 계좌에서 매도가 나면 알린다.
+
+        사전 알림은 생략되지만(PreTradeNotificationTest), 거래가 생기면
+        완료 알림이 알려 주므로 결과적으로 '거래가 있을 때만' 통지된다.
+        """
+        sell = [{"action": "매도", "ticker": "TQQQ", "qty": 2, "price": 51.5}]
+        send = self._cycle("미국장", sell, self.HOLD, 0.0, 515.0)
+        send.assert_called_once()
+        self.assertIn("매도 TQQQ 2주", send.call_args[0][0])
+
+    def test_no_trade_from_zero_cash_account_stays_quiet(self):
+        """같은 계좌라도 거래가 없으면 조용하다"""
+        self._cycle("미국장", [], self.HOLD, 0.0, 515.0).assert_not_called()
+
     def test_trade_notifies_even_when_cash_ends_at_zero(self):
         """현금을 다 쓴 매수도 알려야 한다 (거래 없음 조건에 휩쓸리면 안 된다)"""
         send = self._cycle("미국장", self.TRADE, self.HOLD, 0.0, 515.0)
@@ -907,24 +922,28 @@ class PreTradeNotificationTest(unittest.TestCase):
             main._notify_pre_trade(api, market)
         return send
 
-    def test_empty_account_sends_nothing(self):
+    def test_no_cash_sends_nothing(self):
         for market in ("미국장", "국내장"):
             with self.subTest(market=market):
                 self._run(market, {}, 0.0).assert_not_called()
 
-    def test_cash_only_still_notifies(self):
+    def test_no_cash_with_holdings_sends_nothing(self):
+        """현금 0 이면 보유가 있어도 사전 알림은 없다.
+
+        매도가 실제로 일어나면 매매 완료 알림이 알려 준다
+        (QuietNotificationTest.test_sell_from_zero_cash_account_notifies).
+        """
+        self._run("미국장", {"TQQQ": {"qty": 10, "avg_price": 50.0}}, 0.0).assert_not_called()
+
+    def test_cash_notifies(self):
         self._run("미국장", {}, 100.0).assert_called_once()
 
-    def test_holdings_without_cash_still_notifies(self):
-        """현금이 0 이어도 보유가 있으면 매도가 일어날 수 있다"""
-        self._run("미국장", {"TQQQ": {"qty": 10, "avg_price": 50.0}}, 0.0).assert_called_once()
 
-
-class AccountEmptyHelperTest(unittest.TestCase):
+class NoCashHelperTest(unittest.TestCase):
 
     def test_cases(self):
         import main
-        self.assertTrue(main._account_is_empty("미국장", 0.0, {}))
-        self.assertFalse(main._account_is_empty("미국장", 100.0, {}))
-        self.assertFalse(main._account_is_empty("미국장", 0.0, {"TQQQ": {"qty": 1}}))
-        self.assertTrue(main._account_is_empty("국내장", 0, {}))
+        self.assertTrue(main._no_cash_to_trade("미국장", 0.0))
+        self.assertTrue(main._no_cash_to_trade("국내장", 0))
+        self.assertFalse(main._no_cash_to_trade("미국장", 100.0))
+        self.assertFalse(main._no_cash_to_trade("미국장", 0.01))
