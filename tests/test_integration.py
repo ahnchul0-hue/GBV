@@ -442,3 +442,33 @@ class MainLoopHelpersTest(unittest.TestCase):
         with mock.patch.object(main, "notify_error") as err:
             main._notify_unfilled(api, "kr")
         err.assert_called_once()
+
+
+class CheckSetupTest(unittest.TestCase):
+
+    def test_kiwoom_hint_for_bad_key(self):
+        import check_setup
+        check_setup.results.clear()
+        config = {"APP_KEY": "realkey", "APP_SECRET": "realsecret", "KIWOOM_MODE": "real"}
+        err = Exception("키움 API 오류 (3): 인증에 실패했습니다[8001:App Key와 Secret Key 검증에 실패했습니다] (api-id=au10001)")
+        with mock.patch("kiwoom_api.KiwoomAPI", side_effect=err), \
+             mock.patch("builtins.print") as out:
+            self.assertFalse(check_setup.check_kiwoom(config))
+        printed = "\n".join(str(c.args[0]) for c in out.call_args_list if c.args)
+        self.assertIn("kiwoom_mode = demo", printed)
+
+    def test_placeholder_detection(self):
+        import check_setup
+        self.assertTrue(check_setup.is_placeholder("XXXXXXXX"))
+        self.assertTrue(check_setup.is_placeholder(""))
+        self.assertFalse(check_setup.is_placeholder("123456789:ABC"))
+
+    def test_main_stops_cleanly_when_kiwoom_fails(self):
+        import main
+        with mock.patch.object(main, "load_config", return_value={"APP_KEY": "k", "APP_SECRET": "s"}), \
+             mock.patch.object(main, "get_broker", side_effect=RuntimeError("8001")), \
+             mock.patch.object(main, "notify_error") as err, \
+             mock.patch.object(main.threading, "Thread") as thread:
+            main.main()
+        err.assert_called_once()
+        thread.assert_not_called()

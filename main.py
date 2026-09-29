@@ -191,7 +191,13 @@ def main():
         logger.error(error)
         return
     
-    api = get_broker(config)
+    try:
+        api = get_broker(config)
+    except Exception as e:
+        logger.error(f"키움 API 연결 실패: {e}")
+        logger.error("원인 확인: python check_setup.py")
+        notify_error(f"키움 API 연결 실패로 봇을 시작하지 못했습니다:\n{e}\n\nPC에서 python check_setup.py 로 원인을 확인하세요.")
+        return
     logger.info(f"{describe_broker(config)} 초기화 완료")
     if get_dry_run(config):
         _send("🧪 [GBV] 연습 모드(dry_run = true)로 시작합니다. 주문은 보내지 않습니다.")
