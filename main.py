@@ -12,8 +12,9 @@ import threading
 from datetime import datetime
 
 from config_manager import (
-    load_config, get_market_times, get_trading_enabled, get_dry_run
+    load_config, get_market_times, get_trading_enabled, get_dry_run, get_heartbeat_time
 )
+import bot_status
 from broker import get_broker, validate_api_info, describe_broker
 from strategy import run_us_strategy, run_kr_strategy
 import trade_state
@@ -39,6 +40,7 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+bot_status.install_error_handler()   # /health 에서 마지막 오류를 보여 주기 위해
 
 LOOP_INTERVAL_SEC = 30   # 매매 시간 체크 주기
 TIME_TOLERANCE_MIN = 1   # 매매 시간 ±허용 범위
@@ -154,6 +156,24 @@ def _notify_pre_trade(api, market: str):
         logger.error(f"매매 전 현황 전송 실패: {e}", exc_info=True)
 
 
+def _maybe_send_heartbeat(sent_date):
+    """heartbeat_time에 하루 한 번 봇 상태 전송. 보낸 날짜를 돌려준다"""
+    try:
+        hb_time = get_heartbeat_time(load_config())
+    except Exception as e:
+        logger.error(f"heartbeat 설정 읽기 실패: {e}")
+        return sent_date
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    if not hb_time or sent_date == today_str or not _is_target_time(hb_time):
+        return sent_date
+    try:
+        _send(bot_status.health_text(title="☀️ [GBV] 봇 정상 작동 중"))
+        logger.info("생존 신호 전송")
+    except Exception as e:
+        logger.error(f"생존 신호 전송 실패: {e}")
+    return today_str
+
+
 def _notify_unfilled(api, market: str):
     """매매 후 남아 있는 미체결 주문 알림 (없으면 로그만)"""
     label = "미국장" if market == "us" else "국내장"
@@ -180,6 +200,7 @@ def _notify_unfilled(api, market: str):
 
 
 def main():
+    bot_status.mark_started()
     logger.info("=" * 60)
     logger.info("  GBV 자동매매 봇 시작")
     logger.info("=" * 60)
@@ -221,6 +242,7 @@ def main():
     kr_pre_notified_today = None
     holiday_notified = {}     # {market: 날짜} 휴장 안내는 하루 한 번만
     fill_checked = {}         # {market: 날짜} 미체결 확인은 하루 한 번만
+    heartbeat_sent = None     # 생존 신호 보낸 날짜
     prev_us_time = None
     prev_kr_time = None
     
@@ -228,6 +250,9 @@ def main():
     
     try:
         while True:
+            # ── 매일 생존 신호 (주말 포함, 알림이 안 오면 봇이 꺼진 것) ──
+            heartbeat_sent = _maybe_send_heartbeat(heartbeat_sent)
+            
             # ── 평일 체크 ──
             if not _is_weekday():
                 time.sleep(LOOP_INTERVAL_SEC)

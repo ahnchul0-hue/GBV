@@ -19,7 +19,7 @@ _RESERVED_KEYS = {
     "US_MARKET_TIME", "KR_MARKET_TIME",
     "OUTSIDE_TQQQ", "TRADING_ENABLED", "LAST_INCREASED_MONTH",
     "LAST_INCREASED_MONTH_US", "LAST_INCREASED_MONTH_KR",
-    "DRY_RUN", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"
+    "DRY_RUN", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "HEARTBEAT_TIME"
 }
 
 
@@ -150,6 +150,21 @@ def get_outside_tqqq(config: dict) -> int:
 def get_dry_run(config: dict) -> bool:
     """dry_run = true 이면 주문을 보내지 않고 기록·알림만 (봇 재시작 후 적용)"""
     return config.get("DRY_RUN", "false").strip().lower() == "true"
+
+
+def get_heartbeat_time(config: dict) -> str:
+    """매일 생존 신호 시각 (HH:MM). 'off'이면 빈 문자열, 기본 08:30"""
+    value = config.get("HEARTBEAT_TIME", "08:30").strip()
+    if value.lower() in ("off", "false", "no", "0", ""):
+        return ""
+    try:
+        h, m = map(int, value.split(":"))
+        if 0 <= h < 24 and 0 <= m < 60:
+            return f"{h:02d}:{m:02d}"
+    except ValueError:
+        pass
+    logger.warning(f"heartbeat_time 형식 오류({value!r}) → 기본 08:30 사용")
+    return "08:30"
 
 
 def get_trading_enabled(config: dict) -> bool:
