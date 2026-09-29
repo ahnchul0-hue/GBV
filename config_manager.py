@@ -15,7 +15,7 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.txt")
 logger = logging.getLogger(__name__)
 
 _RESERVED_KEYS = {
-    "APP_KEY", "APP_SECRET", "ACCOUNT_NO",
+    "APP_KEY", "APP_SECRET", "ACCOUNT_NO", "BROKER", "KIWOOM_MODE",  # BROKER: 이전 설정 호환
     "US_MARKET_TIME", "KR_MARKET_TIME",
     "OUTSIDE_TQQQ", "TRADING_ENABLED", "LAST_INCREASED_MONTH"
 }
@@ -52,6 +52,19 @@ def get_api_info(config: dict) -> tuple:
         config.get("APP_SECRET", ""),
         config.get("ACCOUNT_NO", "")
     )
+
+
+def get_kiwoom_mode(config: dict) -> str:
+    """키움 실전/모의 구분 (real / demo), 기본값 real"""
+    return config.get("KIWOOM_MODE", "real").strip().lower() or "real"
+
+
+def normalize_kr_ticker(ticker: str) -> str:
+    """국내 종목코드 정규화: 'A252670' → '252670' (증권사 잔고 키와 맞추기 위함)"""
+    code = str(ticker).strip().upper()
+    if len(code) == 7 and code[0] in "AJQ" and code[1:].isalnum():
+        return code[1:]
+    return code
 
 
 def get_market_times(config: dict) -> tuple:
