@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 _RESERVED_KEYS = {
     "APP_KEY", "APP_SECRET", "ACCOUNT_NO", "BROKER", "KIWOOM_MODE",  # BROKER: 이전 설정 호환
     "US_MARKET_TIME", "KR_MARKET_TIME",
-    "OUTSIDE_TQQQ", "TRADING_ENABLED", "LAST_INCREASED_MONTH"
+    "OUTSIDE_TQQQ", "TRADING_ENABLED", "LAST_INCREASED_MONTH",
+    "LAST_INCREASED_MONTH_US", "LAST_INCREASED_MONTH_KR"
 }
 
 
@@ -157,15 +158,22 @@ def update_base(ticker: str, new_base: float):
     logger.info(f"{ticker} current_base 업데이트: ${new_base:.2f}")
 
 
-def update_monthly_increase_date():
-    """월 증액 날짜 업데이트"""
+def update_monthly_increase_date(market: str):
+    """월 증액 날짜 업데이트 (market: "us" / "kr" 시장별로 따로 기록)"""
     today_str = date.today().strftime("%Y-%m")
-    _set_value("last_increased_month", today_str)
-    logger.info(f"월 증액 날짜 업데이트: {today_str}")
+    _set_value(f"last_increased_month_{market}", today_str)
+    logger.info(f"월 증액 날짜 업데이트 ({market}): {today_str}")
 
 
-def get_last_increased_month(config: dict) -> str:
-    """마지막 증액 월"""
+def get_last_increased_month(config: dict, market: str) -> str:
+    """
+    시장별 마지막 증액 월
+    시장별 기록이 아직 없으면 예전 공용 기록(last_increased_month)을 사용
+    (업그레이드 직후 같은 달에 두 번 증액되는 것을 막기 위함)
+    """
+    key = f"LAST_INCREASED_MONTH_{market.upper()}"
+    if key in config:
+        return config.get(key, "")
     return config.get("LAST_INCREASED_MONTH", "")
 
 

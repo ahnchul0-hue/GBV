@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import config_manager  # noqa: E402
 import strategy  # noqa: E402
+import trade_state  # noqa: E402
 from broker import validate_api_info  # noqa: E402
 
 SAMPLE_CONFIG = """\
@@ -83,6 +84,9 @@ class FakeBroker:
     def get_kr_price(self, ticker):
         return 10000
 
+    def get_us_price(self, ticker):
+        raise TimeoutError("시세 조회 타임아웃")
+
     def buy_kr(self, ticker, qty, price=0):
         self.orders.append(("buy", ticker, qty, price))
         return True
@@ -101,6 +105,11 @@ class StrategyTest(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         patcher = mock.patch.object(strategy.time, "sleep")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.object(trade_state, "STATE_FILE", os.path.join(tmp.name, "trade_state.json"))
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -138,6 +147,129 @@ class StrategyTest(unittest.TestCase):
             with self.assertRaises(TimeoutError):
                 self._run_kr_cycle(broker)
         self.assertEqual(broker.orders, [])
+
+    def test_order_attempt_is_recorded_before_sending(self):
+        # 주문 전송 직전에 파일에 기록 → 주문 중 봇이 꺼져도 재시작 후 다시 매매하지 않음
+        broker = FakeBroker({"252670": {"qty": 100, "avg_price": 10000.0}})
+        seen = []
+        broker.sell_kr = lambda *a, **k: seen.append(trade_state.traded_today("kr")) or False
+        strategy.execute_gbv(broker, "252670", 10000, 800000, 0, is_us=False)
+        self.assertEqual(seen, [True])
+        self.assertFalse(trade_state.traded_today("us"))
+
+    def test_no_order_means_no_record(self):
+        broker = FakeBroker({"252670": {"qty": 80, "avg_price": 10000.0}})   # 기준금과 같음
+        strategy.execute_gbv(broker, "252670", 10000, 800000, 0, is_us=False)
+        self.assertEqual(broker.orders, [])
+        self.assertFalse(trade_state.traded_today("kr"))
+
+    def test_price_failure_is_notified(self):
+        broker = FakeBroker({})
+        with mock.patch.object(strategy, "load_config", return_value={"TQQQ": "10000"}), \
+             mock.patch.object(strategy, "get_all_us_tickers", return_value={"TQQQ": 10000.0}), \
+             mock.patch.object(strategy, "get_outside_tqqq", return_value=0):
+            strategy.run_us_strategy(broker)
+        strategy.notify_error.assert_called_once()
+        message = strategy.notify_error.call_args[0][0]
+        self.assertIn("TQQQ", message)
+        self.assertIn("건너뜁니다", message)
+        self.assertEqual(broker.orders, [])
+
+
+class TradeStateTest(unittest.TestCase):
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = os.path.join(tmp.name, "trade_state.json")
+        patcher = mock.patch.object(trade_state, "STATE_FILE", self.path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_mark_and_clear(self):
+        self.assertFalse(trade_state.traded_today("us"))
+        trade_state.mark_traded("us")
+        self.assertTrue(trade_state.traded_today("us"))
+        self.assertFalse(trade_state.traded_today("kr"))
+        trade_state.clear_today("us")
+        self.assertFalse(trade_state.traded_today("us"))
+
+    def test_survives_restart(self):
+        # 파일에 남기므로 프로세스를 다시 켜도(모듈 상태와 무관하게) 기억한다
+        trade_state.mark_traded("kr")
+        with open(self.path, encoding="utf-8") as f:
+            self.assertIn("kr", f.read())
+        self.assertTrue(trade_state.traded_today("kr"))
+
+    def test_yesterday_record_does_not_block_today(self):
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write('{"us": "2000-01-01"}')
+        self.assertFalse(trade_state.traded_today("us"))
+
+    def test_corrupted_file_is_tolerated(self):
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write("{not json")
+        self.assertFalse(trade_state.traded_today("us"))
+        trade_state.mark_traded("us")
+        self.assertTrue(trade_state.traded_today("us"))
+
+    def test_unknown_market(self):
+        with self.assertRaises(ValueError):
+            trade_state.mark_traded("jp")
+
+
+class MonthlyIncreaseTest(unittest.TestCase):
+    """국내장·미국장 월 증액 기록이 서로를 막지 않는지"""
+
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".txt")
+        os.close(fd)
+        self.addCleanup(os.remove, self.path)
+        patches = [
+            mock.patch.object(config_manager, "CONFIG_PATH", self.path),
+            mock.patch.object(strategy, "is_first_trading_day_of_month", return_value=True),
+            mock.patch.object(strategy, "notify_monthly_increase"),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        self.this_month = strategy.date.today().strftime("%Y-%m")
+
+    def _write(self, text):
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def test_kr_increase_does_not_block_us(self):
+        self._write(
+            "TQQQ = 10000\nTQQQ_monthly_rate = 0.02\n"
+            "A252670 = 1000000\nA252670_monthly_rate = 0.01\n"
+        )
+        kr = strategy.handle_monthly_increase(config_manager.load_config(), {"A252670": 1000000.0}, "kr")
+        us = strategy.handle_monthly_increase(config_manager.load_config(), {"TQQQ": 10000.0}, "us")
+        self.assertEqual(kr["A252670"], (1000000.0, 1010000.0))
+        self.assertEqual(us["TQQQ"], (10000.0, 10200.0))
+        config = config_manager.load_config()
+        self.assertEqual(config["LAST_INCREASED_MONTH_KR"], self.this_month)
+        self.assertEqual(config["LAST_INCREASED_MONTH_US"], self.this_month)
+
+    def test_same_market_increases_once_per_month(self):
+        self._write("TQQQ = 10000\nTQQQ_monthly_rate = 0.02\n")
+        strategy.handle_monthly_increase(config_manager.load_config(), {"TQQQ": 10000.0}, "us")
+        again = strategy.handle_monthly_increase(config_manager.load_config(), {"TQQQ": 10000.0}, "us")
+        self.assertEqual(again, {})
+        self.assertEqual(config_manager.load_config()["TQQQ_CURRENT_BASE"], "10200.00")
+
+    def test_legacy_record_prevents_double_increase_after_upgrade(self):
+        # 예전 공용 기록이 이번 달이면, 시장별 기록이 없어도 이번 달은 다시 증액하지 않음
+        self._write(f"TQQQ = 10000\nTQQQ_monthly_rate = 0.02\nlast_increased_month = {self.this_month}\n")
+        result = strategy.handle_monthly_increase(config_manager.load_config(), {"TQQQ": 10000.0}, "us")
+        self.assertEqual(result, {})
+
+    def test_market_keys_are_not_tickers(self):
+        self._write(f"TQQQ = 10000\nlast_increased_month_us = {self.this_month}\nlast_increased_month_kr = {self.this_month}\n")
+        config = config_manager.load_config()
+        self.assertEqual(config_manager.get_all_us_tickers(config), {"TQQQ": 10000.0})
+        self.assertEqual(config_manager.get_all_kr_tickers(config), {})
 
 
 if __name__ == "__main__":
