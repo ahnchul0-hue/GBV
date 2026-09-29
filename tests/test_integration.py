@@ -905,45 +905,22 @@ class QuietNotificationTest(unittest.TestCase):
         send.assert_called_once()
 
 
-class PreTradeNotificationTest(unittest.TestCase):
+class NoRoutineNoticeTest(unittest.TestCase):
+    """거래가 있을 때만 알린다 = 매매 전 사전 알림은 존재하지 않는다.
 
-    def _run(self, market, holdings, cash):
+    1시간 전 시점에는 오늘 거래가 생길지 알 수 없어서, '거래가 있을 때만'이라는
+    규칙을 만족시킬 방법이 없다. 그래서 기능 자체를 뺐다.
+    되살리려면 이 규칙부터 다시 정해야 하므로 여기서 막아 둔다.
+    """
+
+    def test_pre_trade_notice_is_gone(self):
         import main
-        api = mock.MagicMock()
-        if market == "미국장":
-            api.get_us_balance.return_value = (holdings, cash)
-            api.get_us_price.return_value = 51.5
-        else:
-            api.get_kr_balance.return_value = (holdings, cash)
-            api.get_kr_price.return_value = 10000
-            api.get_kr_name.return_value = "테스트종목"
-        with mock.patch.object(main, "_send") as send, \
-             mock.patch.object(main, "load_config", return_value={}):
-            main._notify_pre_trade(api, market)
-        return send
+        for name in ("_notify_pre_trade", "_no_cash_to_trade"):
+            self.assertFalse(hasattr(main, name),
+                             f"{name} 이(가) 되살아났다 - 알림 규칙을 먼저 확인할 것")
 
-    def test_no_cash_sends_nothing(self):
-        for market in ("미국장", "국내장"):
-            with self.subTest(market=market):
-                self._run(market, {}, 0.0).assert_not_called()
-
-    def test_no_cash_with_holdings_sends_nothing(self):
-        """현금 0 이면 보유가 있어도 사전 알림은 없다.
-
-        매도가 실제로 일어나면 매매 완료 알림이 알려 준다
-        (QuietNotificationTest.test_sell_from_zero_cash_account_notifies).
-        """
-        self._run("미국장", {"TQQQ": {"qty": 10, "avg_price": 50.0}}, 0.0).assert_not_called()
-
-    def test_cash_notifies(self):
-        self._run("미국장", {}, 100.0).assert_called_once()
-
-
-class NoCashHelperTest(unittest.TestCase):
-
-    def test_cases(self):
+    def test_trade_time_loop_has_no_hourly_notice(self):
+        import inspect
         import main
-        self.assertTrue(main._no_cash_to_trade("미국장", 0.0))
-        self.assertTrue(main._no_cash_to_trade("국내장", 0))
-        self.assertFalse(main._no_cash_to_trade("미국장", 100.0))
-        self.assertFalse(main._no_cash_to_trade("미국장", 0.01))
+        src = inspect.getsource(main.main)
+        self.assertNotIn("offset_min=-60", src)   # 매매 1시간 전 트리거

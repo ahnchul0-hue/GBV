@@ -74,120 +74,6 @@ def _is_weekday() -> bool:
     return datetime.now().weekday() < 5
 
 
-def _no_cash_to_trade(market: str, cash: float) -> bool:
-    """현금이 없으면 매매 전 알림을 보내지 않는다
-
-    1시간 전 시점에는 오늘 거래가 생길지 알 수 없다. 현금이 0 이면 매수는
-    불가능하고, 매도가 일어나면 매매 완료 알림이 알려 준다. 완료 알림은 거래가
-    있을 때만 나가므로, 결과적으로 '실제 거래가 있을 때만' 메시지가 온다.
-    """
-    if cash > 0:
-        return False
-    logger.info(f"{market} 현금 없음(잔고 0) → 매매 전 알림 생략 "
-                f"(거래가 생기면 완료 알림으로 통지)")
-    return True
-
-
-def _notify_pre_trade(api, market: str):
-    """매매 1시간 전 계좌 현황 텔레그램 전송
-
-    현금이 없으면 보내지 않는다. 매수할 수 없는 상태에서 미리 보낼 내용이 없고,
-    실제로 거래가 생기면 매매 완료 알림이 알려 준다(완료 알림도 거래가 있을 때만
-    나간다). 보유 종목이 있든 없든 마찬가지다.
-    """
-    try:
-        from config_manager import get_outside_tqqq
-        
-        now = datetime.now().strftime("%Y-%m-%d %H:%M")
-        
-        if market == "미국장":
-            holdings, cash = api.get_us_balance()
-            if _no_cash_to_trade(market, cash):
-                return
-            config = load_config()
-            outside_tqqq = get_outside_tqqq(config)
-            
-            total = cash
-            prices = {}
-            for ticker, info in holdings.items():
-                try:
-                    price = api.get_us_price(ticker)
-                    prices[ticker] = price
-                    qty = info["qty"]
-                    # TQQQ는 outside 포함
-                    if ticker == "TQQQ" and outside_tqqq > 0:
-                        total += (qty + outside_tqqq) * price
-                    else:
-                        total += qty * price
-                except Exception:
-                    pass
-            
-            cash_ratio = cash / total * 100 if total > 0 else 0
-            holding_lines = []
-            for ticker, info in holdings.items():
-                price = prices.get(ticker, 0)
-                qty = info["qty"]
-                # TQQQ는 outside 포함
-                if ticker == "TQQQ" and outside_tqqq > 0:
-                    total_qty = qty + outside_tqqq
-                    value = total_qty * price
-                    ratio = value / total * 100 if total > 0 else 0
-                    holding_lines.append(f"{ticker}: {total_qty}주 (${value:,.2f} / {ratio:.1f}%, outside={outside_tqqq})")
-                else:
-                    value = qty * price
-                    ratio = value / total * 100 if total > 0 else 0
-                    holding_lines.append(f"{ticker}: {qty}주 (${value:,.2f} / {ratio:.1f}%)")
-            
-            _send(
-                f"⏰ [GBV] 미국장 매매 1시간 전\n"
-                f"time: {now}\n"
-                f"───────────\n"
-                f"달러잔고: ${cash:,.2f} ({cash_ratio:.1f}%)\n"
-                f"total: ${total:,.2f}\n"
-                f"───────────\n"
-                + "\n".join(holding_lines or ["no holdings"])
-            )
-            
-        elif market == "국내장":
-            holdings, cash = api.get_kr_balance()
-            if _no_cash_to_trade(market, cash):
-                return
-            total = cash
-            prices = {}
-            for ticker, info in holdings.items():
-                try:
-                    price = api.get_kr_price(ticker)
-                    prices[ticker] = price
-                    total += info["qty"] * price
-                except Exception:
-                    pass
-            
-            cash_ratio = cash / total * 100 if total > 0 else 0
-            holding_lines = []
-            for ticker, info in holdings.items():
-                price = prices.get(ticker, 0)
-                name = api.get_kr_name(ticker)
-                qty = info["qty"]
-                value = qty * price
-                ratio = value / total * 100 if total > 0 else 0
-                holding_lines.append(f"{name}({ticker}): {qty}주 (₩{int(value):,} / {ratio:.1f}%)")
-            
-            _send(
-                f"⏰ [GBV] 국내장 매매 1시간 전\n"
-                f"time: {now}\n"
-                f"───────────\n"
-                f"원화잔고: ₩{int(cash):,} ({cash_ratio:.1f}%)\n"
-                f"total: ₩{int(total):,}\n"
-                f"───────────\n"
-                + "\n".join(holding_lines or ["no holdings"])
-            )
-        
-        logger.info(f"{market} 매매 1시간 전 현황 전송 완료")
-        
-    except Exception as e:
-        logger.error(f"매매 전 현황 전송 실패: {e}", exc_info=True)
-
-
 def _maybe_send_heartbeat(sent_date):
     """heartbeat_time에 하루 한 번 봇 상태 전송. 보낸 날짜를 돌려준다"""
     try:
@@ -290,8 +176,6 @@ def main():
     for market, label in (("us", "미국장"), ("kr", "국내장")):
         if trade_state.traded_today(market):
             logger.info(f"{label}: 오늘 이미 매매함 (trade_state.json) → 오늘은 다시 매매하지 않음")
-    us_pre_notified_today = None
-    kr_pre_notified_today = None
     holiday_notified = {}     # {market: 날짜} 휴장 안내는 하루 한 번만
     fill_checked = {}         # {market: 날짜} 미체결 확인은 하루 한 번만
     heartbeat_sent = None     # 생존 신호 보낸 날짜
@@ -356,18 +240,6 @@ def main():
                     logger.info(f"{label} 휴장일({name}) → 매매하지 않음")
                     _send(f"🏖 [GBV] 오늘은 {label} 휴장일({name})이라 매매하지 않습니다.")
                     holiday_notified[market] = today_str
-            
-            # ── 미국장 매매 1시간 전 알림 ──
-            if us_open and _is_target_time(us_time, offset_min=-60) and us_pre_notified_today != today_str:
-                logger.info("미국장 매매 1시간 전 현황 전송")
-                _notify_pre_trade(api, "미국장")
-                us_pre_notified_today = today_str
-            
-            # ── 국내장 매매 1시간 전 알림 ──
-            if kr_open and _is_target_time(kr_time, offset_min=-60) and kr_pre_notified_today != today_str:
-                logger.info("국내장 매매 1시간 전 현황 전송")
-                _notify_pre_trade(api, "국내장")
-                kr_pre_notified_today = today_str
             
             # ── 미국장 매매 ──
             if us_open and _is_target_time(us_time) and not trade_state.traded_today("us"):
