@@ -6,6 +6,7 @@ config_manager / broker / strategy 연동 테스트 (네트워크 없음)
 
 import os
 import sys
+import logging
 import tempfile
 import unittest
 from unittest import mock
@@ -511,3 +512,92 @@ class OrderNotificationTest(unittest.TestCase):
         with mock.patch.object(KiwoomAPI, "_us_order", side_effect=RuntimeError("[2000] 잔고 부족")):
             self.assertFalse(api.buy_us("TQQQ", 1))
         self.assertIn("잔고 부족", api.last_order_error)
+
+
+class BotStatusTest(unittest.TestCase):
+
+    def setUp(self):
+        import bot_status
+        self.bs = bot_status
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+        for target, value in ((trade_state, ("STATE_FILE", os.path.join(tmp.name, "trade_state.json"))),
+                              (bot_status, ("LOG_DIR", tmp.name))):
+            patcher = mock.patch.object(target, *value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        bot_status.clear_errors()
+
+    def test_next_trade_time_skips_holidays_and_done(self):
+        from datetime import datetime as dt
+        now = dt(2026, 10, 8, 23, 0)   # 목요일 밤, 다음날 10/9 한글날(국내 휴장)
+        nxt = self.bs.next_trade_time("kr", "09:00", traded_today=True, now=now)
+        self.assertEqual(nxt, dt(2026, 10, 12, 9, 0))           # 금(휴장)·주말 건너뛰고 월요일
+        nxt = self.bs.next_trade_time("us", "22:30", traded_today=False, now=dt(2026, 9, 30, 21, 0))
+        self.assertEqual(nxt, dt(2026, 9, 30, 22, 30))          # 오늘 아직 안 함
+        nxt = self.bs.next_trade_time("us", "22:30", traded_today=False, now=dt(2026, 9, 30, 23, 0))
+        self.assertEqual(nxt, dt(2026, 10, 1, 22, 30))          # 시각 지남 → 다음 날
+
+    def test_error_handler_records_last_error(self):
+        logger = logging.getLogger("bot_status_test")
+        handler = self.bs.LastErrorHandler()
+        logger.addHandler(handler)
+        self.addCleanup(logger.removeHandler, handler)
+        logger.info("평범한 로그")
+        self.assertIsNone(self.bs.last_error())
+        logger.error("해외 매수 실패 (TQQQ): 잔고 부족\n상세")
+        self.assertEqual(self.bs.last_error()[1], "해외 매수 실패 (TQQQ): 잔고 부족")
+
+    def test_health_text(self):
+        from datetime import datetime as dt
+        config = {"KIWOOM_MODE": "demo", "US_MARKET_TIME": "22:30", "KR_MARKET_TIME": "09:00",
+                  "TQQQ": "10000", "418660": "1000000"}
+        with mock.patch("config_manager.load_config", return_value=config), \
+             mock.patch.object(trade_state, "date") as d:
+            d.today.return_value = date(2026, 9, 30)
+            trade_state.mark_traded("kr")
+            text = self.bs.health_text(now=dt(2026, 9, 30, 12, 0))
+        self.assertIn("모의투자", text)
+        self.assertIn("미국장: ⏳ 오늘 아직 / 다음 오늘(수) 22:30", text)
+        self.assertIn("국내장: ✅ 오늘 매매함 / 다음 내일(목) 09:00", text)
+        self.assertIn("마지막 오류: 없음", text)
+
+    def test_tail_log_shortens_and_filters(self):
+        path = os.path.join(self.tmp, "trade_20260930.log")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("2026-09-30 01:08:08,387 [INFO] __main__ - 매매 대기 중...\n"
+                    "2026-09-30 01:08:44,455 [WARNING] kiwoom_api - 달러 조회 실패\n"
+                    "2026-09-30 01:09:00,000 [INFO] telegram_handler - /balance 실행\n")
+        text = self.bs.tail_log(2)
+        self.assertIn("최근 2줄", text)
+        self.assertIn("01:08:44 W kiwoom_api 달러 조회 실패", text)
+        self.assertNotIn("매매 대기", text)
+        self.assertIn("달러 조회 실패", self.bs.tail_log(20, errors_only=True))
+        self.assertNotIn("/balance", self.bs.tail_log(20, errors_only=True))
+
+    def test_tail_log_respects_telegram_limit(self):
+        path = os.path.join(self.tmp, "trade_20260930.log")
+        with open(path, "w", encoding="utf-8") as f:
+            for i in range(100):
+                f.write(f"2026-09-30 01:00:00,000 [INFO] x - {'가' * 100} {i}\n")
+        self.assertLessEqual(len(self.bs.tail_log(100)), 4096)
+
+    def test_heartbeat_time_setting(self):
+        self.assertEqual(config_manager.get_heartbeat_time({}), "08:30")
+        self.assertEqual(config_manager.get_heartbeat_time({"HEARTBEAT_TIME": "off"}), "")
+        self.assertEqual(config_manager.get_heartbeat_time({"HEARTBEAT_TIME": "7:05"}), "07:05")
+        self.assertEqual(config_manager.get_heartbeat_time({"HEARTBEAT_TIME": "abc"}), "08:30")
+
+    def test_heartbeat_sends_once_a_day(self):
+        import main
+        from datetime import datetime as real_dt
+        with mock.patch.object(main, "load_config", return_value={"HEARTBEAT_TIME": "08:30"}), \
+             mock.patch.object(main, "_send") as send, \
+             mock.patch.object(main.bot_status, "health_text", return_value="ok"), \
+             mock.patch.object(main, "datetime") as dt:
+            dt.now.return_value = real_dt(2026, 10, 3, 8, 30)   # 토요일도 보냄
+            sent = main._maybe_send_heartbeat(None)
+            sent = main._maybe_send_heartbeat(sent)
+        self.assertEqual(sent, "2026-10-03")
+        send.assert_called_once_with("ok")

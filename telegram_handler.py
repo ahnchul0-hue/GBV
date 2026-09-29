@@ -8,6 +8,8 @@ telegram_handler.py
   /remove_gbv [종목]              → GBV 종목 제거
   /balance                        → 계좌 조회
   /status                         → 전체 설정 조회
+  /health                         → 봇 상태 (가동 시간, 오늘 매매 여부, 다음 매매, 마지막 오류)
+  /log [줄수|err]                 → 최근 로그 (기본 20줄, err: 경고·오류만)
   /help                           → 도움말
 
 ※ 명령은 telegram_chat_id(주인) 채팅에서 온 것만 처리하고 나머지는 무시한다.
@@ -345,6 +347,35 @@ def setup_handlers(bot):
             logger.error(f"status 오류: {e}", exc_info=True)
     
     
+    @bot.message_handler(commands=['health'], func=is_owner)
+    def health(message):
+        """봇 상태 요약"""
+        try:
+            import bot_status
+            bot.reply_to(message, bot_status.health_text())
+            logger.info("/health 실행")
+        except Exception as e:
+            bot.reply_to(message, f"error: {str(e)}")
+            logger.error(f"health 오류: {e}", exc_info=True)
+    
+    
+    @bot.message_handler(commands=['log'], func=is_owner)
+    def log(message):
+        """최근 로그 보기: /log, /log 50, /log err"""
+        try:
+            import bot_status
+            parts = message.text.split()
+            arg = parts[1].lower() if len(parts) > 1 else ""
+            errors_only = arg in ("err", "error", "오류")
+            count = 20
+            if arg.isdigit():
+                count = max(1, min(int(arg), 100))
+            bot.send_message(message.chat.id, bot_status.tail_log(count, errors_only=errors_only))
+        except Exception as e:
+            bot.reply_to(message, f"error: {str(e)}")
+            logger.error(f"log 오류: {e}", exc_info=True)
+    
+    
     @bot.message_handler(commands=['help'], func=is_owner)
     def help_command(message):
         """도움말"""
@@ -355,6 +386,8 @@ def setup_handlers(bot):
 /remove_gbv [ticker]
 /balance
 /status
+/health
+/log [줄수|err]
 /help
 
 examples:
@@ -364,7 +397,10 @@ examples:
 /set TQQQ 80000
 /set tqqq_monthly_rate 0.02
 /add_gbv UGL 30000 0
-/remove_gbv UGL"""
+/remove_gbv UGL
+/log 50
+/log err
+/set heartbeat_time 08:30   (off: 끄기)"""
         bot.reply_to(message, help_text)
 
 
