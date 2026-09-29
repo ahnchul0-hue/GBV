@@ -70,7 +70,17 @@ def notify_monthly_increase(increases: dict, is_us: bool = True):
 def notify_cycle_complete(market: str, trades: list, holdings: dict,
                           cash: float, total: float, prices: dict,
                           outside_tqqq: int):
-    """매매 완료 알림"""
+    """매매 완료 알림 (거래가 없으면 보내지 않는다)
+
+    거래가 한 건도 없으면 잔고·보유 현황만 적힌 '완료' 메시지가 되는데,
+    매일 같은 내용이라 알림으로서 쓸모가 없고 진짜 체결 알림을 묻는다.
+    계좌가 비어 있는 경우(잔고 0·보유 없음)도 자연히 여기에 걸린다.
+    사이클이 돌았다는 사실은 로그에 남으므로 확인에는 지장이 없다.
+    """
+    if not trades:
+        logger.info(f"{market} 거래 없음 → 완료 알림 생략")
+        return
+
     # 거래 내역
     trade_lines = []
     for t in trades:

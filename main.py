@@ -74,8 +74,21 @@ def _is_weekday() -> bool:
     return datetime.now().weekday() < 5
 
 
+def _account_is_empty(market: str, cash: float, holdings: dict) -> bool:
+    """현금도 없고 보유 종목도 없으면 알릴 내용이 없다"""
+    if cash > 0 or holdings:
+        return False
+    logger.info(f"{market} 계좌가 비어 있음(잔고 0, 보유 없음) → 매매 전 알림 생략")
+    return True
+
+
 def _notify_pre_trade(api, market: str):
-    """매매 1시간 전 계좌 현황 텔레그램 전송"""
+    """매매 1시간 전 계좌 현황 텔레그램 전송
+
+    계좌가 비어 있으면 보내지 않는다. 잔고 0 에 보유도 없으면 매번 똑같은
+    '잔고 0 / no holdings' 알림이 되고, 살 수도 팔 수도 없는 상태라 알릴 게 없다.
+    현금이 0 이어도 보유 종목이 있으면 매도가 일어날 수 있으므로 그대로 보낸다.
+    """
     try:
         from config_manager import get_outside_tqqq
         
@@ -83,6 +96,8 @@ def _notify_pre_trade(api, market: str):
         
         if market == "미국장":
             holdings, cash = api.get_us_balance()
+            if _account_is_empty(market, cash, holdings):
+                return
             config = load_config()
             outside_tqqq = get_outside_tqqq(config)
             
@@ -129,6 +144,8 @@ def _notify_pre_trade(api, market: str):
             
         elif market == "국내장":
             holdings, cash = api.get_kr_balance()
+            if _account_is_empty(market, cash, holdings):
+                return
             total = cash
             prices = {}
             for ticker, info in holdings.items():

@@ -844,3 +844,87 @@ class LogRedactTest(unittest.TestCase):
             logging.LogRecord("t", logging.ERROR, __file__, 1, self.REAL, (), None))
         when, message = bot_status.last_error()
         self.assertNotIn(self.SECRET, message)
+
+
+# ─────────────────────────────────────────
+# 조용한 알림 (거래 없음 · 빈 계좌)
+# ─────────────────────────────────────────
+
+class QuietNotificationTest(unittest.TestCase):
+    """거래가 없거나 계좌가 비어 있으면 텔레그램 알림을 보내지 않는다.
+
+    로그에는 남으므로 사이클이 돌았는지는 /log 로 확인할 수 있고,
+    오류 알림과 일일 생존 신호는 그대로 나간다.
+    """
+
+    TRADE = [{"action": "매수", "ticker": "TQQQ", "qty": 3, "price": 51.5}]
+    HOLD  = {"TQQQ": {"qty": 10, "avg_price": 50.0}}
+
+    def _cycle(self, market, trades, holdings, cash, total):
+        import notifier
+        with mock.patch.object(notifier, "_send") as send:
+            notifier.notify_cycle_complete(market, trades, holdings, cash,
+                                           total, {"TQQQ": 51.5}, 0)
+        return send
+
+    def test_no_trade_sends_nothing(self):
+        for market in ("미국장", "국내장"):
+            with self.subTest(market=market):
+                send = self._cycle(market, [], self.HOLD, 1000.0, 1515.0)
+                send.assert_not_called()
+
+    def test_empty_account_sends_nothing(self):
+        for market in ("미국장", "국내장"):
+            with self.subTest(market=market):
+                send = self._cycle(market, [], {}, 0.0, 0.0)
+                send.assert_not_called()
+
+    def test_trade_still_notifies(self):
+        send = self._cycle("미국장", self.TRADE, self.HOLD, 1000.0, 1515.0)
+        send.assert_called_once()
+        self.assertIn("매수 TQQQ 3주", send.call_args[0][0])
+
+    def test_trade_notifies_even_when_cash_ends_at_zero(self):
+        """현금을 다 쓴 매수도 알려야 한다 (거래 없음 조건에 휩쓸리면 안 된다)"""
+        send = self._cycle("미국장", self.TRADE, self.HOLD, 0.0, 515.0)
+        send.assert_called_once()
+
+
+class PreTradeNotificationTest(unittest.TestCase):
+
+    def _run(self, market, holdings, cash):
+        import main
+        api = mock.MagicMock()
+        if market == "미국장":
+            api.get_us_balance.return_value = (holdings, cash)
+            api.get_us_price.return_value = 51.5
+        else:
+            api.get_kr_balance.return_value = (holdings, cash)
+            api.get_kr_price.return_value = 10000
+            api.get_kr_name.return_value = "테스트종목"
+        with mock.patch.object(main, "_send") as send, \
+             mock.patch.object(main, "load_config", return_value={}):
+            main._notify_pre_trade(api, market)
+        return send
+
+    def test_empty_account_sends_nothing(self):
+        for market in ("미국장", "국내장"):
+            with self.subTest(market=market):
+                self._run(market, {}, 0.0).assert_not_called()
+
+    def test_cash_only_still_notifies(self):
+        self._run("미국장", {}, 100.0).assert_called_once()
+
+    def test_holdings_without_cash_still_notifies(self):
+        """현금이 0 이어도 보유가 있으면 매도가 일어날 수 있다"""
+        self._run("미국장", {"TQQQ": {"qty": 10, "avg_price": 50.0}}, 0.0).assert_called_once()
+
+
+class AccountEmptyHelperTest(unittest.TestCase):
+
+    def test_cases(self):
+        import main
+        self.assertTrue(main._account_is_empty("미국장", 0.0, {}))
+        self.assertFalse(main._account_is_empty("미국장", 100.0, {}))
+        self.assertFalse(main._account_is_empty("미국장", 0.0, {"TQQQ": {"qty": 1}}))
+        self.assertTrue(main._account_is_empty("국내장", 0, {}))
