@@ -31,14 +31,16 @@ import single_instance
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 
+# 테스트가 import main 하면 이 블록이 그대로 돌아 실제 매매 로그에 가짜 오류가 쌓인다.
+# GBV_LOG_FILE 로 경로를 돌릴 수 있게 해 두고, 테스트는 os.devnull 을 넣는다.
+LOG_FILE = os.environ.get("GBV_LOG_FILE") or os.path.join(
+    LOG_DIR, f"trade_{datetime.now().strftime('%Y%m%d')}.log")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] [%(process)d] %(name)s - %(message)s",
     handlers=[
-        logging.FileHandler(
-            os.path.join(LOG_DIR, f"trade_{datetime.now().strftime('%Y%m%d')}.log"),
-            encoding="utf-8"
-        ),
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
         logging.StreamHandler()
     ]
 )

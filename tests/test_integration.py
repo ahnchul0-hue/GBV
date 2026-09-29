@@ -13,6 +13,12 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+# main 을 import 하면 logging.basicConfig 가 실제 매매 로그에 FileHandler 를 붙인다.
+# 테스트의 가짜 오류가 운영 로그에 섞이지 않도록 import 전에 경로를 돌려놓는다.
+os.environ.setdefault("GBV_LOG_FILE", os.devnull)
+os.environ.setdefault("GBV_LOCK_FILE",
+                      os.path.join(tempfile.gettempdir(), "gbv-test-bot.lock"))
+
 import config_manager  # noqa: E402
 import strategy  # noqa: E402
 import trade_state  # noqa: E402
@@ -466,7 +472,8 @@ class CheckSetupTest(unittest.TestCase):
 
     def test_main_stops_cleanly_when_kiwoom_fails(self):
         import main
-        with mock.patch.object(main, "load_config", return_value={"APP_KEY": "k", "APP_SECRET": "s"}), \
+        with mock.patch.object(main.single_instance, "acquire"), \
+             mock.patch.object(main, "load_config", return_value={"APP_KEY": "k", "APP_SECRET": "s"}), \
              mock.patch.object(main, "get_broker", side_effect=RuntimeError("8001")), \
              mock.patch.object(main, "notify_error") as err, \
              mock.patch.object(main.threading, "Thread") as thread:
@@ -675,6 +682,7 @@ class SingleInstanceTest(unittest.TestCase):
     def setUp(self):
         import single_instance
         self.si = single_instance
+        self.si.release()      # 앞 테스트가 잠금을 남겼어도 깨끗한 상태에서 시작
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.lock = os.path.join(self.tmp.name, "bot.lock")
@@ -732,3 +740,49 @@ class SingleInstanceTest(unittest.TestCase):
                                side_effect=single_instance.AlreadyRunning("4242")),              mock.patch.object(main, "load_config") as load:
             main.main()
         load.assert_not_called()      # 봇 본체는 시작하지 않아야 한다
+
+# ─────────────────────────────────────────
+# /log 포맷
+# ─────────────────────────────────────────
+
+class TailLogTest(unittest.TestCase):
+    """로그 포맷에 PID 를 넣었을 때 /log 파싱이 조용히 깨진 적이 있다.
+
+    깨져도 예외가 아니라 '보기 흉한 긴 줄'이 나올 뿐이라 눈치채기 어렵다.
+    옛 로그(PID 없음)와 새 로그(PID 있음)가 한 파일에 섞이는 것도 정상이다.
+    """
+
+    OLD = "2026-09-30 01:08:44,455 [INFO] kiwoom_api - 달러 예수금: $100"
+    NEW = "2026-09-30 02:55:37,183 [INFO] [10808] __main__ - 매매 대기 중..."
+    ERR = "2026-09-30 02:41:40,440 [ERROR] [7080] single_instance - 이미 실행 중"
+    RAW = '    raise TimeoutError("잔고 조회 타임아웃")'
+
+    def _tail(self, rows, **kw):
+        import bot_status
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "trade_20260930.log")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(chr(10).join(rows) + chr(10))
+        with mock.patch.object(bot_status, "LOG_DIR", tmp.name):
+            return bot_status.tail_log(**kw)
+
+    def test_pid_is_stripped_and_module_kept(self):
+        out = self._tail([self.NEW], lines=1)
+        self.assertIn("02:55:37 I __main__ 매매 대기 중...", out)
+        self.assertNotIn("10808", out)      # PID 는 파일에만, 텔레그램에는 안 보낸다
+        self.assertNotIn(" - ", out)        # 모듈 뒤 구분자도 떼어낸다
+
+    def test_old_format_without_pid_still_parses(self):
+        out = self._tail([self.OLD], lines=1)
+        self.assertIn("01:08:44 I kiwoom_api 달러 예수금: $100", out)
+
+    def test_unparsable_line_passes_through(self):
+        out = self._tail([self.RAW], lines=1)
+        self.assertIn(self.RAW, out)
+
+    def test_errors_only_filter(self):
+        out = self._tail([self.OLD, self.NEW, self.ERR], lines=10, errors_only=True)
+        self.assertIn("single_instance 이미 실행 중", out)
+        self.assertNotIn("매매 대기 중", out)
+

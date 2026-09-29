@@ -16,6 +16,12 @@ import requests
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+# main 을 import 하면 logging.basicConfig 가 실제 매매 로그에 FileHandler 를 붙인다.
+# 테스트의 가짜 오류가 운영 로그에 섞이지 않도록 import 전에 경로를 돌려놓는다.
+os.environ.setdefault("GBV_LOG_FILE", os.devnull)
+os.environ.setdefault("GBV_LOCK_FILE",
+                      os.path.join(tempfile.gettempdir(), "gbv-test-bot.lock"))
+
 import kiwoom_api  # noqa: E402
 from kiwoom_api import KiwoomAPI, KiwoomError, _num, _price, normalize_kr_code  # noqa: E402
 

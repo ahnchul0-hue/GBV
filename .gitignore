@@ -19,5 +19,5 @@ __pycache__/
 config.txt
 
 # 단일 실행 잠금
-bot.lock
+bot.lock*
 bot.pid

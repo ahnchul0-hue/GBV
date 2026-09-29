@@ -22,8 +22,11 @@ import os
 logger = logging.getLogger(__name__)
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-LOCK_FILE = os.path.join(_HERE, "bot.lock")
-PID_FILE  = os.path.join(_HERE, "bot.pid")
+
+# 테스트는 GBV_LOCK_FILE 로 경로를 돌린다. 안 그러면 main() 을 부르는 테스트가
+# 돌고 있는 진짜 봇의 잠금을 잡거나, 반대로 진짜 봇이 못 뜨게 막는다.
+LOCK_FILE = os.environ.get("GBV_LOCK_FILE") or os.path.join(_HERE, "bot.lock")
+PID_FILE  = LOCK_FILE + ".pid"
 
 _handle = None
 

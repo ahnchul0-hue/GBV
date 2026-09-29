@@ -11,6 +11,7 @@ bot_status.py
 import glob
 import logging
 import os
+import re
 import threading
 from collections import deque
 from datetime import date, datetime, timedelta
@@ -158,6 +159,19 @@ def latest_log_file():
     return max(files, key=os.path.getmtime) if files else None
 
 
+# "2026-09-30 01:08:44,455 [INFO] kiwoom_api - x"        → "01:08:44 I kiwoom_api x"
+# "2026-09-30 02:55:37,183 [INFO] [10808] main - x"      → "02:55:37 I main x"
+# PID 는 로그 파일에만 두고 텔레그램에는 안 보낸다. 길이 제한이 빠듯하다.
+_LOG_LINE = re.compile(
+    r"^\d{4}-\d\d-\d\d "        # 날짜 (버림)
+    r"(\d\d:\d\d:\d\d),\d+ "  # 시각
+    r"\[(\w+)\] "                 # 레벨
+    r"(?:\[\d+\] )?"              # PID (옛 로그에는 없다)
+    r"([\w.]+) - "                  # 모듈
+    r"(.*)$"                         # 메시지
+)
+
+
 def tail_log(lines: int = 20, errors_only: bool = False) -> str:
     """최근 로그 파일 끝부분 (텔레그램 길이 제한에 맞춰 자름)"""
     path = latest_log_file()
@@ -168,18 +182,14 @@ def tail_log(lines: int = 20, errors_only: bool = False) -> str:
     if errors_only:
         rows = [r for r in rows if "[ERROR]" in r or "[WARNING]" in r or "[CRITICAL]" in r]
     picked = rows[-lines:] if lines > 0 else []
-    # 시각은 초까지만, 모듈 이름은 짧게: "2026-09-30 01:08:44,455 [INFO] kiwoom_api - x" → "01:08:44 I kiwoom_api x"
     short = []
     for r in picked:
-        parts = r.split(" ", 4)
-        if len(parts) == 5 and parts[2].startswith("[") and parts[3] != "":
-            clock = parts[1].split(",")[0]
-            level = parts[2].strip("[]")[:1]
-            msg = parts[4][2:] if parts[4].startswith("- ") else parts[4]
-            rest = parts[3] + " " + msg
-            short.append(f"{clock} {level} {rest}")
+        m = _LOG_LINE.match(r)
+        if m:
+            clock, level, module, msg = m.groups()
+            short.append(f"{clock} {level[:1]} {module} {msg}")
         else:
-            short.append(r)
+            short.append(r)          # 트레이스백 등 형식이 다른 줄은 그대로
     header = f"📄 {os.path.basename(path)} 최근 {len(short)}줄" + (" (경고·오류만)" if errors_only else "")
     body = "\n".join(short) or "(해당 로그 없음)"
     if len(header) + len(body) + 1 > TELEGRAM_LIMIT:
