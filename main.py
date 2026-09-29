@@ -5,7 +5,9 @@ GBV 자동매매 봇 메인 실행
 실행: python main.py
 """
 
+import atexit
 import logging
+import sys
 import time
 import os
 import threading
@@ -21,6 +23,7 @@ import trade_state
 from market_calendar import is_trading_day, holiday_name
 from notifier import notify_error, _send
 from telegram_handler import start_polling, stop_polling as stop_telegram_polling
+import single_instance
 
 # ─────────────────────────────────────────
 # 로그 설정
@@ -30,7 +33,7 @@ os.makedirs(LOG_DIR, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    format="%(asctime)s [%(levelname)s] [%(process)d] %(name)s - %(message)s",
     handlers=[
         logging.FileHandler(
             os.path.join(LOG_DIR, f"trade_{datetime.now().strftime('%Y%m%d')}.log"),
@@ -200,13 +203,30 @@ def _notify_unfilled(api, market: str):
 
 
 def main():
+    # ── 중복 실행 차단 ──
+    # trade_state 의 잠금은 threading.Lock 이라 프로세스 사이에서는 듣지 않는다.
+    # 두 개가 같이 돌면 둘 다 '오늘 미매매'로 읽고 주문을 중복해서 낼 수 있다.
+    try:
+        single_instance.acquire()
+    except single_instance.AlreadyRunning as e:
+        logger.error(f"{e} - 중복 실행을 막기 위해 시작하지 않습니다")
+        logger.error("방금 종료했다면 몇 초 뒤 다시 시도하세요")
+        return
+    atexit.register(single_instance.release)
+
     bot_status.mark_started()
     logger.info("=" * 60)
     logger.info("  GBV 자동매매 봇 시작")
     logger.info("=" * 60)
     
     # ── config 및 API 초기화 ──
-    config = load_config()
+    try:
+        config = load_config()
+    except Exception as e:
+        # 여기서 예외가 그냥 올라가면 콘솔에만 찍히고 로그 파일에는 아무것도 안 남는다
+        logger.exception(f"config.txt 를 읽지 못했습니다: {e}")
+        logger.error("원인 확인: python check_setup.py")
+        return
     error = validate_api_info(config)
     if error:
         logger.error(error)
@@ -358,4 +378,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass                      # main 안에서 이미 처리·기록한다
+    except Exception:
+        # 로그 설정은 import 시점에 끝나므로 여기서 잡으면 파일에도 남는다
+        logger.exception("예기치 못한 오류로 종료합니다")
+        sys.exit(1)

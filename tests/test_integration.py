@@ -660,3 +660,75 @@ class TelegramShutdownTest(unittest.TestCase):
         # 수정 전 동작 재현: 이벤트만 세팅하면 long-poll 이 끝날 때까지 안 멈춘다
         self.assertTrue(self._run(use_stop_polling=False),
                         "stop_event 만으로 멈췄다면 이 테스트의 전제가 틀린 것")
+
+# ─────────────────────────────────────────
+# 중복 실행 차단
+# ─────────────────────────────────────────
+
+class SingleInstanceTest(unittest.TestCase):
+    """OS 파일 잠금이므로 프로세스가 죽으면 OS 가 알아서 풀어 준다.
+
+    윈도우에서는 PID 생사 확인을 쓸 수 없다. os.kill(pid, 0) 이
+    TerminateProcess 라 확인하려던 프로세스를 죽여 버린다.
+    """
+
+    def setUp(self):
+        import single_instance
+        self.si = single_instance
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.lock = os.path.join(self.tmp.name, "bot.lock")
+        self.pid  = os.path.join(self.tmp.name, "bot.pid")
+        self.addCleanup(self._force_release)
+
+    def _force_release(self):
+        try:
+            self.si.release()
+        except Exception:
+            pass
+
+    def _acquire_as_other_process(self):
+        """_handle 을 비워 두 번째 acquire 가 실제로 잠금을 다투게 한다.
+
+        잠금은 열린 파일 핸들에 걸리므로, 핸들이 다르면 같은 프로세스 안에서도
+        실제 프로세스 두 개와 똑같이 충돌한다.
+        """
+        held = self.si._handle
+        self.si._handle = None
+        try:
+            self.si.acquire(self.lock, self.pid)
+            self.si._handle = held        # 잡혔다면 원복하고 실패로 보고
+            return True
+        except self.si.AlreadyRunning as e:
+            self.si._handle = held
+            self.err = e
+            return False
+
+    def test_second_instance_is_refused_with_pid(self):
+        self.si.acquire(self.lock, self.pid)
+        self.assertFalse(self._acquire_as_other_process(), "두 번째 인스턴스가 잠금을 잡았다")
+        self.assertIn(str(os.getpid()), str(self.err))
+
+    def test_acquire_is_idempotent_in_one_process(self):
+        self.si.acquire(self.lock, self.pid)
+        self.si.acquire(self.lock, self.pid)      # 같은 프로세스에서는 무해해야 한다
+        self.si.release()
+
+    def test_release_frees_the_lock_and_removes_pid_file(self):
+        self.si.acquire(self.lock, self.pid)
+        self.assertTrue(os.path.exists(self.pid))
+        self.si.release()
+        self.assertFalse(os.path.exists(self.pid))
+        self.si.acquire(self.lock, self.pid)      # 다시 잡을 수 있어야 한다
+        self.si.release()
+
+    def test_release_without_acquire_is_noop(self):
+        self.si.release()
+
+    def test_main_refuses_to_start_when_already_running(self):
+        import main
+        import single_instance
+        with mock.patch.object(single_instance, "acquire",
+                               side_effect=single_instance.AlreadyRunning("4242")),              mock.patch.object(main, "load_config") as load:
+            main.main()
+        load.assert_not_called()      # 봇 본체는 시작하지 않아야 한다
