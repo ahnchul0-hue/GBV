@@ -345,3 +345,100 @@ class SellsFirstTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DryRunTest(unittest.TestCase):
+
+    def test_orders_are_not_sent(self):
+        from broker import DryRunBroker
+        real = mock.Mock()
+        real.get_kr_price.return_value = 10000
+        with mock.patch("notifier._send") as send:
+            api = DryRunBroker(real)
+            self.assertTrue(api.buy_kr("252670", 3, 10000))
+            self.assertTrue(api.sell_us("TQQQ", 2))
+            self.assertEqual(api.get_kr_price("252670"), 10000)   # 조회는 진짜 API로
+        real.buy_kr.assert_not_called()
+        real.sell_us.assert_not_called()
+        self.assertEqual(send.call_count, 2)
+        self.assertIn("DRY-RUN", send.call_args_list[0][0][0])
+
+    def test_create_broker_wraps_when_enabled(self):
+        import broker
+        config = {"APP_KEY": "k", "APP_SECRET": "s", "KIWOOM_MODE": "demo", "DRY_RUN": "true"}
+        with mock.patch("kiwoom_api.KiwoomAPI") as fake_api:   # 토큰 발급(네트워크) 막기
+            self.assertIsInstance(broker.create_broker(config), broker.DryRunBroker)
+            config["DRY_RUN"] = "false"
+            self.assertIs(broker.create_broker(config), fake_api.return_value)
+
+    def test_setting_keys_are_not_tickers(self):
+        config = {"DRY_RUN": "1", "TELEGRAM_CHAT_ID": "12345", "TELEGRAM_BOT_TOKEN": "1", "TQQQ": "100"}
+        self.assertEqual(config_manager.get_all_us_tickers(config), {"TQQQ": 100.0})
+        self.assertEqual(config_manager.get_all_kr_tickers(config), {})
+
+
+class TelegramOwnerTest(unittest.TestCase):
+
+    def _msg(self, chat_id):
+        return mock.Mock(chat=mock.Mock(id=chat_id))
+
+    def test_only_owner_chat_is_accepted(self):
+        import telegram_handler
+        with mock.patch.object(telegram_handler, "get_telegram_settings", return_value=("t", "12345")):
+            self.assertTrue(telegram_handler.is_owner(self._msg(12345)))
+            self.assertFalse(telegram_handler.is_owner(self._msg(99999)))
+
+    def test_missing_chat_id_accepts_nobody(self):
+        import telegram_handler
+        with mock.patch.object(telegram_handler, "get_telegram_settings", return_value=("t", "")):
+            self.assertFalse(telegram_handler.is_owner(self._msg(12345)))
+
+    def test_config_overrides_notifier_constants(self):
+        import notifier
+        with mock.patch("config_manager.load_config",
+                        return_value={"TELEGRAM_BOT_TOKEN": "cfg-token", "TELEGRAM_CHAT_ID": " 777 "}):
+            self.assertEqual(notifier.get_telegram_settings(), ("cfg-token", "777"))
+        with mock.patch("config_manager.load_config", return_value={}):
+            self.assertEqual(notifier.get_telegram_settings(),
+                             (notifier.TELEGRAM_BOT_TOKEN, notifier.TELEGRAM_CHAT_ID))
+
+
+class MainLoopHelpersTest(unittest.TestCase):
+
+    def test_target_time_wraps_midnight(self):
+        import main
+        from datetime import datetime as real_dt
+        with mock.patch.object(main, "datetime") as dt:
+            dt.now.return_value = real_dt(2026, 9, 29, 0, 20)
+            self.assertTrue(main._is_target_time("23:50", offset_min=30))
+            self.assertFalse(main._is_target_time("23:50"))
+            dt.now.return_value = real_dt(2026, 9, 29, 23, 30)
+            self.assertTrue(main._is_target_time("00:30", offset_min=-60))
+
+    def test_unfilled_report(self):
+        import main
+        api = mock.Mock()
+        api.get_us_unfilled.return_value = [
+            {"ticker": "TQQQ", "side": "매수", "qty": 5, "remaining": 3, "price": 51.5, "ord_no": "1"}]
+        with mock.patch.object(main, "_send") as send:
+            main._notify_unfilled(api, "us")
+        text = send.call_args[0][0]
+        self.assertIn("미체결 주문 1건", text)
+        self.assertIn("매수 TQQQ 잔량 3/5주 @ $51.50", text)
+
+    def test_no_unfilled_sends_nothing(self):
+        import main
+        api = mock.Mock()
+        api.get_kr_unfilled.return_value = []
+        with mock.patch.object(main, "_send") as send, mock.patch.object(main, "notify_error") as err:
+            main._notify_unfilled(api, "kr")
+        send.assert_not_called()
+        err.assert_not_called()
+
+    def test_unfilled_query_failure_is_reported(self):
+        import main
+        api = mock.Mock()
+        api.get_kr_unfilled.side_effect = TimeoutError("타임아웃")
+        with mock.patch.object(main, "notify_error") as err:
+            main._notify_unfilled(api, "kr")
+        err.assert_called_once()
