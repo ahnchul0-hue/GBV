@@ -15,7 +15,7 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.txt")
 logger = logging.getLogger(__name__)
 
 _RESERVED_KEYS = {
-    "APP_KEY", "APP_SECRET", "ACCOUNT_NO", "BROKER", "KIWOOM_MODE",
+    "APP_KEY", "APP_SECRET", "ACCOUNT_NO", "BROKER", "KIWOOM_MODE",  # BROKER: 이전 설정 호환
     "US_MARKET_TIME", "KR_MARKET_TIME",
     "OUTSIDE_TQQQ", "TRADING_ENABLED", "LAST_INCREASED_MONTH"
 }
@@ -52,11 +52,6 @@ def get_api_info(config: dict) -> tuple:
         config.get("APP_SECRET", ""),
         config.get("ACCOUNT_NO", "")
     )
-
-
-def get_broker_name(config: dict) -> str:
-    """사용할 증권사 (kiwoom / kis), 기본값 kiwoom"""
-    return config.get("BROKER", "kiwoom").strip().lower() or "kiwoom"
 
 
 def get_kiwoom_mode(config: dict) -> str:

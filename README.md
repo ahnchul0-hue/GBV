@@ -1,15 +1,14 @@
 "당신과 나를 위한 TQQQ 투자법" 독자를 위한 공개 코드입니다.
 
-## 증권사 선택 (키움 / KIS)
+## 키움증권 REST API 설정
 
-`config.txt`의 `broker` 값으로 증권사를 고릅니다. 기본값은 키움입니다.
+`config.txt`에 키움 앱키를 입력합니다.
 
 ```
-broker      = kiwoom     # kiwoom 또는 kis
 kiwoom_mode = real       # real(실전) 또는 demo(모의투자)
 app_key    = <App Key>
 app_secret = <Secret Key>
-account_no =             # 키움은 선택 (앱키에 계좌가 연결됨), KIS는 필수
+account_no =             # 선택 (계좌는 앱키에 연결됨)
 ```
 
 ### 키움 REST API 준비

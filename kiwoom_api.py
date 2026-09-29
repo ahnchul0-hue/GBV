@@ -1,13 +1,13 @@
 """
 kiwoom_api.py
-키움증권 REST API 연동 (KisAPI와 동일한 인터페이스)
+키움증권 REST API 연동
 - 접근토큰 자동 발급/갱신 (au10001), 파일 캐시
 - 국내/미국 주식 현재가, 잔고, 주문, 환율
 
 공식 스펙: https://openapi.kiwoom.com
           https://github.com/Kiwoom-Securities/Kiwoom-REST-API
 
-KIS와 다른 점
+참고
 - 모든 TR이 POST + JSON body, TR 코드는 'api-id' 헤더로 지정
 - 계좌번호를 요청에 넣지 않음 (앱키/토큰에 계좌가 묶여 있음)
 - 업무 오류도 HTTP 200 + return_code != 0 으로 내려옴
@@ -509,7 +509,7 @@ class KiwoomAPI:
     def get_excd(self, ticker: str) -> tuple:
         """
         ticker의 거래소 코드 자동 조회 (usa10098)
-        반환: (stex_tp, stex_tp) - KIS 시그니처(시세용, 주문용) 유지. 키움은 코드 하나로 둘 다 사용
+        반환: (stex_tp, stex_tp) - (시세용, 주문용). 키움은 코드 하나로 둘 다 사용
         예: TQQQ → ("ND", "ND"), SOXL(NYSE Arca) → ("NY", "NY")
         """
         ticker = ticker.strip().upper()
@@ -539,7 +539,7 @@ class KiwoomAPI:
             except Exception:
                 continue
 
-        # KIS는 나스닥으로 기본 설정했지만, 잘못된 거래소로 주문하는 것보다 실패가 안전
+        # 거래소를 추측해서 잘못 주문하는 것보다 실패가 안전
         raise KiwoomError("usa10098", None, f"{ticker} 거래소 감지 실패")
 
     # ─────────────────────────────────────────

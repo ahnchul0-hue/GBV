@@ -59,7 +59,7 @@ def _is_weekday() -> bool:
     return datetime.now().weekday() < 5
 
 
-def _notify_pre_trade(kis, market: str):
+def _notify_pre_trade(api, market: str):
     """매매 1시간 전 계좌 현황 텔레그램 전송"""
     try:
         from config_manager import get_outside_tqqq
@@ -67,7 +67,7 @@ def _notify_pre_trade(kis, market: str):
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         
         if market == "미국장":
-            holdings, cash = kis.get_us_balance()
+            holdings, cash = api.get_us_balance()
             config = load_config()
             outside_tqqq = get_outside_tqqq(config)
             
@@ -75,7 +75,7 @@ def _notify_pre_trade(kis, market: str):
             prices = {}
             for ticker, info in holdings.items():
                 try:
-                    price = kis.get_us_price(ticker)
+                    price = api.get_us_price(ticker)
                     prices[ticker] = price
                     qty = info["qty"]
                     # TQQQ는 outside 포함
@@ -113,12 +113,12 @@ def _notify_pre_trade(kis, market: str):
             )
             
         elif market == "국내장":
-            holdings, cash = kis.get_kr_balance()
+            holdings, cash = api.get_kr_balance()
             total = cash
             prices = {}
             for ticker, info in holdings.items():
                 try:
-                    price = kis.get_kr_price(ticker)
+                    price = api.get_kr_price(ticker)
                     prices[ticker] = price
                     total += info["qty"] * price
                 except Exception:
@@ -128,7 +128,7 @@ def _notify_pre_trade(kis, market: str):
             holding_lines = []
             for ticker, info in holdings.items():
                 price = prices.get(ticker, 0)
-                name = kis.get_kr_name(ticker)
+                name = api.get_kr_name(ticker)
                 qty = info["qty"]
                 value = qty * price
                 ratio = value / total * 100 if total > 0 else 0
@@ -162,7 +162,7 @@ def main():
         logger.error(error)
         return
     
-    kis = get_broker(config)
+    api = get_broker(config)
     logger.info(f"{describe_broker(config)} 초기화 완료")
     
     # ── 텔레그램 백그라운드 시작 ──
@@ -231,20 +231,20 @@ def main():
             # ── 미국장 매매 1시간 전 알림 ──
             if _is_target_time(us_time, offset_min=-60) and us_pre_notified_today != today_str:
                 logger.info("미국장 매매 1시간 전 현황 전송")
-                _notify_pre_trade(kis, "미국장")
+                _notify_pre_trade(api, "미국장")
                 us_pre_notified_today = today_str
             
             # ── 국내장 매매 1시간 전 알림 ──
             if _is_target_time(kr_time, offset_min=-60) and kr_pre_notified_today != today_str:
                 logger.info("국내장 매매 1시간 전 현황 전송")
-                _notify_pre_trade(kis, "국내장")
+                _notify_pre_trade(api, "국내장")
                 kr_pre_notified_today = today_str
             
             # ── 미국장 매매 ──
             if _is_target_time(us_time) and not already_traded_us:
                 logger.info(f"미국장 매매 시간 도달: {us_time}")
                 try:
-                    run_us_strategy(kis)
+                    run_us_strategy(api)
                     already_traded_us = True
                 except Exception as e:
                     logger.error(f"미국장 매매 중 에러: {e}", exc_info=True)
@@ -254,7 +254,7 @@ def main():
             if _is_target_time(kr_time) and not already_traded_kr:
                 logger.info(f"국내장 매매 시간 도달: {kr_time}")
                 try:
-                    run_kr_strategy(kis)
+                    run_kr_strategy(api)
                     already_traded_kr = True
                 except Exception as e:
                     logger.error(f"국내장 매매 중 에러: {e}", exc_info=True)

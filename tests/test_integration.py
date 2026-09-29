@@ -41,15 +41,14 @@ class ConfigTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.addCleanup(os.remove, self.path)
 
-    def test_broker_keys_are_not_tickers(self):
+    def test_setting_keys_are_not_tickers(self):
+        # 이전 설정 파일에 남아 있을 수 있는 broker 키도 종목으로 오인하지 않아야 함
         config = config_manager.load_config()
-        self.assertEqual(config_manager.get_broker_name(config), "kiwoom")
         self.assertEqual(config_manager.get_kiwoom_mode(config), "demo")
         self.assertEqual(config_manager.get_all_us_tickers(config), {"TQQQ": 10000.0})
         self.assertEqual(config_manager.get_all_kr_tickers(config), {"A252670": 1000000.0})
 
     def test_defaults(self):
-        self.assertEqual(config_manager.get_broker_name({}), "kiwoom")
         self.assertEqual(config_manager.get_kiwoom_mode({}), "real")
 
     def test_normalize_kr_ticker(self):
@@ -60,17 +59,14 @@ class ConfigTest(unittest.TestCase):
 
 class ValidateTest(unittest.TestCase):
 
-    def test_kiwoom_does_not_need_account_no(self):
+    def test_account_no_is_optional(self):
         self.assertEqual(validate_api_info({"APP_KEY": "k", "APP_SECRET": "s"}), "")
-
-    def test_kis_needs_account_no(self):
-        self.assertIn("account_no", validate_api_info({"BROKER": "kis", "APP_KEY": "k", "APP_SECRET": "s"}))
 
     def test_missing_keys(self):
         self.assertIn("app_key", validate_api_info({}))
 
-    def test_unknown_broker(self):
-        self.assertIn("broker", validate_api_info({"BROKER": "toss", "APP_KEY": "k", "APP_SECRET": "s"}))
+    def test_invalid_mode(self):
+        self.assertIn("kiwoom_mode", validate_api_info({"APP_KEY": "k", "APP_SECRET": "s", "KIWOOM_MODE": "live"}))
 
 
 class FakeBroker:

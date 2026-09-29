@@ -170,17 +170,17 @@ def setup_handlers(bot):
         """계좌 잔고 조회"""
         try:
             config = load_config()
-            kis = get_broker(config)  # 메인 루프와 같은 객체 공유 (토큰/요청 간격 공유)
+            api = get_broker(config)  # 메인 루프와 같은 객체 공유 (토큰/요청 간격 공유)
             
             # 미국
-            us_holdings, us_cash = kis.get_us_balance()
+            us_holdings, us_cash = api.get_us_balance()
             outside_tqqq = get_outside_tqqq(config)
             
             us_total = us_cash
             us_lines = []
             for ticker, info in us_holdings.items():
                 try:
-                    price = kis.get_us_price(ticker)
+                    price = api.get_us_price(ticker)
                     qty = info["qty"]
                     if ticker == "TQQQ" and outside_tqqq > 0:
                         total_qty = qty + outside_tqqq
@@ -196,13 +196,13 @@ def setup_handlers(bot):
             us_cash_ratio = us_cash / us_total * 100 if us_total > 0 else 0
             
             # 국내
-            kr_holdings, kr_cash = kis.get_kr_balance()
+            kr_holdings, kr_cash = api.get_kr_balance()
             kr_total = kr_cash
             kr_lines = []
             for ticker, info in kr_holdings.items():
                 try:
-                    price = kis.get_kr_price(ticker)
-                    name = kis.get_kr_name(ticker)
+                    price = api.get_kr_price(ticker)
+                    name = api.get_kr_name(ticker)
                     qty = info["qty"]
                     value = qty * price
                     kr_lines.append(f"{name}({ticker}): {qty}주 (₩{int(value):,})")
