@@ -786,3 +786,61 @@ class TailLogTest(unittest.TestCase):
         self.assertIn("single_instance 이미 실행 중", out)
         self.assertNotIn("매매 대기 중", out)
 
+
+
+# ─────────────────────────────────────────
+# 로그 비밀값 가리기
+# ─────────────────────────────────────────
+
+class LogRedactTest(unittest.TestCase):
+    """텔레그램 폴링이 실패하면 requests 예외에 요청 URL 이 통째로 들어가고,
+    그 URL 경로에 봇 토큰이 들어 있다. 로그 파일에 남고 /log 로 다시 나간다.
+    """
+
+    # 2026-09-30 06:41 에 실제로 로그에 찍힌 줄 (토큰만 예시값으로 교체)
+    REAL = ("폴링 오류: HTTPSConnectionPool(host='api.telegram.org', port=443): "
+            "Max retries exceeded with url: "
+            "/bot1234567890:AAHsXMEdT3uHhamZ8EbZkYDZCoH1WNDu5rE/getUpdates"
+            "?offset=98990243&timeout=5")
+    SECRET = "1234567890:AAHsXMEdT3uHhamZ8EbZkYDZCoH1WNDu5rE"
+
+    def setUp(self):
+        import log_redact
+        self.lr = log_redact
+        kept = list(log_redact._secrets)
+        self.addCleanup(lambda: log_redact._secrets.__setitem__(slice(None), kept))
+
+    def test_token_in_url_is_masked(self):
+        out = self.lr.redact(self.REAL)
+        self.assertNotIn(self.SECRET, out)
+        self.assertIn("/bot1234567890:***/getUpdates", out)   # 봇 ID 는 남겨 디버깅에 쓴다
+        self.assertIn("offset=98990243", out)                 # 나머지는 건드리지 않는다
+
+    def test_registered_secret_is_masked_outside_urls(self):
+        self.lr.add_secret(self.SECRET)
+        self.assertNotIn(self.SECRET, self.lr.redact(f"토큰은 {self.SECRET} 입니다"))
+
+    def test_ordinary_line_is_untouched(self):
+        line = "달러 예수금(d4_usd_fx_entr): $100,000.00"
+        self.assertEqual(self.lr.redact(line), line)
+
+    def test_formatter_masks_traceback_too(self):
+        """logger.error(..., exc_info=True) 의 트레이스백은 getMessage() 에 없다."""
+        fmt = self.lr.RedactingFormatter("%(message)s")
+        try:
+            raise RuntimeError(self.REAL)
+        except RuntimeError:
+            record = logging.LogRecord("t", logging.ERROR, __file__, 1,
+                                       "텔레그램 봇 시작 실패", (), sys.exc_info())
+        out = fmt.format(record)
+        self.assertIn("RuntimeError", out)          # 트레이스백이 실제로 붙었는지 확인
+        self.assertNotIn(self.SECRET, out)
+
+    def test_health_last_error_is_masked(self):
+        import bot_status
+        bot_status.clear_errors()
+        self.addCleanup(bot_status.clear_errors)
+        bot_status.LastErrorHandler().emit(
+            logging.LogRecord("t", logging.ERROR, __file__, 1, self.REAL, (), None))
+        when, message = bot_status.last_error()
+        self.assertNotIn(self.SECRET, message)

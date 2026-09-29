@@ -16,6 +16,8 @@ import threading
 from collections import deque
 from datetime import date, datetime, timedelta
 
+import log_redact
+
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 TELEGRAM_LIMIT = 3900          # 텔레그램 메시지 최대 4096자 (여유분 제외)
 
@@ -46,7 +48,9 @@ class LastErrorHandler(logging.Handler):
 
     def emit(self, record):
         try:
-            message = record.getMessage().splitlines()[0][:300]
+            # 포매터를 거치지 않는 경로라 여기서 따로 가린다. 안 그러면
+            # 폴링 오류에 섞인 봇 토큰이 /health 응답으로 텔레그램에 실려 나간다.
+            message = log_redact.redact(record.getMessage()).splitlines()[0][:300]
             with _lock:
                 _errors.append((datetime.fromtimestamp(record.created), message))
         except Exception:

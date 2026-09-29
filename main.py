@@ -24,6 +24,7 @@ from market_calendar import is_trading_day, holiday_name
 from notifier import notify_error, _send
 from telegram_handler import start_polling, stop_polling as stop_telegram_polling
 import single_instance
+import log_redact
 
 # ─────────────────────────────────────────
 # 로그 설정
@@ -36,14 +37,17 @@ os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.environ.get("GBV_LOG_FILE") or os.path.join(
     LOG_DIR, f"trade_{datetime.now().strftime('%Y%m%d')}.log")
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] [%(process)d] %(name)s - %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
-        logging.StreamHandler()
-    ]
-)
+LOG_FORMAT = "%(asctime)s [%(levelname)s] [%(process)d] %(name)s - %(message)s"
+
+# requests 예외에는 요청 URL 이 들어가고, 텔레그램은 URL 경로에 봇 토큰을 담는다.
+# 포매터로 걸어야 메시지뿐 아니라 exc_info 트레이스백에 섞인 토큰까지 가려진다.
+_formatter = log_redact.RedactingFormatter(LOG_FORMAT)
+_file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+_file_handler.setFormatter(_formatter)
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(_formatter)
+
+logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _console_handler])
 logger = logging.getLogger(__name__)
 bot_status.install_error_handler()   # /health 에서 마지막 오류를 보여 주기 위해
 
@@ -229,6 +233,9 @@ def main():
         logger.exception(f"config.txt 를 읽지 못했습니다: {e}")
         logger.error("원인 확인: python check_setup.py")
         return
+    # URL 밖에 맨몸으로 찍히는 경우까지 대비해 실제 토큰도 등록해 둔다
+    log_redact.add_secret(config.get("TELEGRAM_BOT_TOKEN"))
+
     error = validate_api_info(config)
     if error:
         logger.error(error)
