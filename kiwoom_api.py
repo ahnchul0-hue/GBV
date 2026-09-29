@@ -433,6 +433,32 @@ class KiwoomAPI:
             logger.error(f"원화 출금가능금액 조회 실패: {e}")
         return 0
 
+    def get_kr_unfilled(self) -> list:
+        """
+        국내 미체결 주문 (ka10075, 전체 종목·통합 거래소)
+        반환: [{"ticker", "side"("매수"/"매도"), "qty", "remaining", "price", "ord_no"}]
+        """
+        rows, _ = self._call_list(
+            "ka10075", "/api/dostk/acnt",
+            {"all_stk_tp": "0", "trde_tp": "0", "stk_cd": "", "stex_tp": "0"},
+            "oso"
+        )
+        result = []
+        for item in rows:
+            remaining = int(_num(item.get("oso_qty")))
+            if remaining <= 0:
+                continue
+            side_text = str(item.get("io_tp_nm") or "")
+            result.append({
+                "ticker": normalize_kr_code(item.get("stk_cd") or ""),
+                "side": "매도" if "매도" in side_text else "매수",
+                "qty": int(_num(item.get("ord_qty"))),
+                "remaining": remaining,
+                "price": _price(item.get("ord_pric")),
+                "ord_no": str(item.get("ord_no") or "").strip(),
+            })
+        return result
+
     def _get_kr_tick_size(self, price: int) -> int:
         """국내주식 호가단위 (KRX 2023-01-25 개편 기준)
         ETF/ETN 호가단위(2천원 미만 1원, 이상 5원)의 배수이기도 해서 ETF에도 유효하다.
@@ -688,6 +714,31 @@ class KiwoomAPI:
         except Exception as e:
             logger.error(f"해외 매도 실패 ({ticker}): {e}")
             return False
+
+    def get_us_unfilled(self) -> list:
+        """
+        미국 미체결 주문 (ust21050, 오늘 주문·전체 거래소)
+        반환: [{"ticker", "side"("매수"/"매도"), "qty", "remaining", "price", "ord_no"}]
+        """
+        rows, _ = self._call_list(
+            "ust21050", "/api/us/acnt",
+            {"ord_dt": "", "slby_tp": "0", "stex_tp": "", "stk_cd": ""},
+            "result_list"
+        )
+        result = []
+        for item in rows:
+            remaining = int(_num(item.get("ord_remnq")))
+            if remaining <= 0 or str(item.get("ord_cntr_tp") or "10").strip() == "12":   # 12: 취소주문
+                continue
+            result.append({
+                "ticker": str(item.get("stk_cd") or "").strip().upper(),
+                "side": "매도" if str(item.get("slby_tp") or "").strip() == "1" else "매수",
+                "qty": int(_num(item.get("ord_qty"))),
+                "remaining": remaining,
+                "price": _price(item.get("ord_uv")),
+                "ord_no": str(item.get("ord_no") or "").strip(),
+            })
+        return result
 
     # ─────────────────────────────────────────
     # 환율 조회

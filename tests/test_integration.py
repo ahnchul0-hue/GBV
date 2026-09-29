@@ -401,3 +401,44 @@ class TelegramOwnerTest(unittest.TestCase):
         with mock.patch("config_manager.load_config", return_value={}):
             self.assertEqual(notifier.get_telegram_settings(),
                              (notifier.TELEGRAM_BOT_TOKEN, notifier.TELEGRAM_CHAT_ID))
+
+
+class MainLoopHelpersTest(unittest.TestCase):
+
+    def test_target_time_wraps_midnight(self):
+        import main
+        from datetime import datetime as real_dt
+        with mock.patch.object(main, "datetime") as dt:
+            dt.now.return_value = real_dt(2026, 9, 29, 0, 20)
+            self.assertTrue(main._is_target_time("23:50", offset_min=30))
+            self.assertFalse(main._is_target_time("23:50"))
+            dt.now.return_value = real_dt(2026, 9, 29, 23, 30)
+            self.assertTrue(main._is_target_time("00:30", offset_min=-60))
+
+    def test_unfilled_report(self):
+        import main
+        api = mock.Mock()
+        api.get_us_unfilled.return_value = [
+            {"ticker": "TQQQ", "side": "매수", "qty": 5, "remaining": 3, "price": 51.5, "ord_no": "1"}]
+        with mock.patch.object(main, "_send") as send:
+            main._notify_unfilled(api, "us")
+        text = send.call_args[0][0]
+        self.assertIn("미체결 주문 1건", text)
+        self.assertIn("매수 TQQQ 잔량 3/5주 @ $51.50", text)
+
+    def test_no_unfilled_sends_nothing(self):
+        import main
+        api = mock.Mock()
+        api.get_kr_unfilled.return_value = []
+        with mock.patch.object(main, "_send") as send, mock.patch.object(main, "notify_error") as err:
+            main._notify_unfilled(api, "kr")
+        send.assert_not_called()
+        err.assert_not_called()
+
+    def test_unfilled_query_failure_is_reported(self):
+        import main
+        api = mock.Mock()
+        api.get_kr_unfilled.side_effect = TimeoutError("타임아웃")
+        with mock.patch.object(main, "notify_error") as err:
+            main._notify_unfilled(api, "kr")
+        err.assert_called_once()

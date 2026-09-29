@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 LOOP_INTERVAL_SEC = 30   # 매매 시간 체크 주기
 TIME_TOLERANCE_MIN = 1   # 매매 시간 ±허용 범위
+FILL_CHECK_MIN = 30      # 매매 후 몇 분 뒤 미체결 확인
 
 
 def _is_target_time(time_str: str, offset_min: int = 0) -> bool:
@@ -52,8 +53,9 @@ def _is_target_time(time_str: str, offset_min: int = 0) -> bool:
     now = datetime.now()
     h, m = map(int, time_str.strip().split(":"))
     now_min = now.hour * 60 + now.minute
-    target_min = h * 60 + m + offset_min
-    return abs(now_min - target_min) <= TIME_TOLERANCE_MIN
+    target_min = (h * 60 + m + offset_min) % (24 * 60)
+    diff = abs(now_min - target_min)
+    return min(diff, 24 * 60 - diff) <= TIME_TOLERANCE_MIN   # 자정 넘김(23:50 + 30분 등) 처리
 
 
 def _is_weekday() -> bool:
@@ -152,6 +154,31 @@ def _notify_pre_trade(api, market: str):
         logger.error(f"매매 전 현황 전송 실패: {e}", exc_info=True)
 
 
+def _notify_unfilled(api, market: str):
+    """매매 후 남아 있는 미체결 주문 알림 (없으면 로그만)"""
+    label = "미국장" if market == "us" else "국내장"
+    try:
+        orders = api.get_us_unfilled() if market == "us" else api.get_kr_unfilled()
+    except Exception as e:
+        logger.error(f"{label} 미체결 조회 실패: {e}", exc_info=True)
+        notify_error(f"{label} 미체결 조회 실패:\n{e}")
+        return
+    if not orders:
+        logger.info(f"{label} 미체결 주문 없음")
+        return
+    lines = []
+    for o in orders:
+        price = f"${o['price']:,.2f}" if market == "us" else f"₩{int(o['price']):,}"
+        lines.append(f"{o['side']} {o['ticker']} 잔량 {o['remaining']}/{o['qty']}주 @ {price}")
+    logger.info(f"{label} 미체결 {len(orders)}건: " + "; ".join(lines))
+    _send(
+        f"⏳ [GBV] {label} 미체결 주문 {len(orders)}건 (매매 {FILL_CHECK_MIN}분 후)\n"
+        f"───────────\n"
+        + "\n".join(lines)
+        + "\n───────────\n※ 봇은 주문을 취소·정정하지 않습니다. 필요하면 영웅문에서 처리하세요."
+    )
+
+
 def main():
     logger.info("=" * 60)
     logger.info("  GBV 자동매매 봇 시작")
@@ -187,6 +214,7 @@ def main():
     us_pre_notified_today = None
     kr_pre_notified_today = None
     holiday_notified = {}     # {market: 날짜} 휴장 안내는 하루 한 번만
+    fill_checked = {}         # {market: 날짜} 미체결 확인은 하루 한 번만
     prev_us_time = None
     prev_kr_time = None
     
@@ -277,6 +305,14 @@ def main():
                 except Exception as e:
                     logger.error(f"국내장 매매 중 에러: {e}", exc_info=True)
                     notify_error(f"국내장 매매 에러:\n{str(e)}")
+            
+            # ── 매매 후 미체결 확인 ──
+            for market, t in (("us", us_time), ("kr", kr_time)):
+                if (_is_target_time(t, offset_min=FILL_CHECK_MIN)
+                        and fill_checked.get(market) != today_str
+                        and trade_state.traded_today(market)):
+                    _notify_unfilled(api, market)
+                    fill_checked[market] = today_str
             
             time.sleep(LOOP_INTERVAL_SEC)
     

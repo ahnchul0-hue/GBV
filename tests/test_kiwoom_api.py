@@ -485,3 +485,41 @@ class OverseasTest(KiwoomTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnfilledTest(KiwoomTestCase):
+
+    def test_kr_unfilled(self):
+        rows = [
+            {"stk_cd": "A252670", "io_tp_nm": "-매도", "ord_qty": "20", "oso_qty": "5",
+             "ord_pric": "10000", "ord_no": "0000069"},
+            {"stk_cd": "005930", "io_tp_nm": "+매수", "ord_qty": "3", "oso_qty": "0",
+             "ord_pric": "74100", "ord_no": "0000070"},   # 전량 체결 → 제외
+        ]
+        api, session = self.make_api({"ka10075": ok(oso=rows)})
+        self.assertEqual(api.get_kr_unfilled(), [
+            {"ticker": "252670", "side": "매도", "qty": 20, "remaining": 5,
+             "price": 10000.0, "ord_no": "0000069"},
+        ])
+        self.assertEqual(session.bodies("ka10075")[0],
+                         {"all_stk_tp": "0", "trde_tp": "0", "stk_cd": "", "stex_tp": "0"})
+
+    def test_us_unfilled(self):
+        rows = [
+            {"ord_cntr_tp": "10", "ord_no": "000000282", "stk_cd": "TQQQ", "slby_tp": "2",
+             "ord_qty": "000000000005", "ord_uv": "51.5000", "ord_remnq": "000000000005"},
+            {"ord_cntr_tp": "12", "ord_no": "000000283", "stk_cd": "TQQQ", "slby_tp": "1",
+             "ord_qty": "000000000002", "ord_uv": "0.0000", "ord_remnq": "000000000002"},   # 취소주문
+            {"ord_cntr_tp": "10", "ord_no": "000000284", "stk_cd": "UGL", "slby_tp": "1",
+             "ord_qty": "000000000004", "ord_uv": "30.0000", "ord_remnq": "000000000000"},  # 체결 완료
+        ]
+        api, _ = self.make_api({"ust21050": ok(result_list=rows)})
+        self.assertEqual(api.get_us_unfilled(), [
+            {"ticker": "TQQQ", "side": "매수", "qty": 5, "remaining": 5,
+             "price": 51.5, "ord_no": "000000282"},
+        ])
+
+    def test_unfilled_failure_raises(self):
+        api, _ = self.make_api({"ust21050": {"return_code": 1999, "return_msg": "오류"}})
+        with self.assertRaises(KiwoomError):
+            api.get_us_unfilled()
