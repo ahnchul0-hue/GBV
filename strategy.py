@@ -19,9 +19,9 @@ from config_manager import (
     load_config, get_all_us_tickers, get_all_kr_tickers,
     get_base_value, get_monthly_rate,
     get_outside_tqqq, update_base, update_monthly_increase_date,
-    get_last_increased_month, is_first_trading_day_of_month,
-    normalize_kr_ticker
+    get_last_increased_month, normalize_kr_ticker
 )
+from market_calendar import is_trading_day
 from notifier import (
     notify_buy, notify_sell, notify_error,
     notify_monthly_increase, notify_cycle_complete
@@ -114,6 +114,25 @@ def execute_gbv(api, ticker: str, price: float, base_value: float,
         return trades, holdings, cash
 
 
+def _sells_first(tickers: dict, prices: dict, holdings: dict, config: dict,
+                 outside_tqqq: int, is_us: bool) -> list:
+    """
+    매매 순서 정하기: 기준금보다 많이 가진(=매도할) 종목을 먼저 처리
+    매수를 먼저 하면 아직 팔지 않은 종목의 대금을 쓸 수 없어 현금 부족으로 주문이 거부될 수 있다.
+    같은 그룹 안에서는 config에 적힌 순서를 유지한다.
+    """
+    def excess(ticker):
+        info = holdings.get(ticker) or holdings.get(normalize_kr_ticker(ticker), {})
+        qty = info.get("qty", 0)
+        if is_us and ticker == "TQQQ":
+            qty += outside_tqqq
+        return qty * prices.get(ticker, 0) - get_base_value(config, ticker)
+
+    names = list(tickers.keys())
+    sells = [t for t in names if excess(t) > 0]
+    return sells + [t for t in names if t not in sells]
+
+
 def _record_attempt(ticker: str, is_us: bool, attempted: list = None):
     """
     주문 전송 직전 기록
@@ -158,7 +177,9 @@ def _stop_after_orders(market: str, attempted: list, exc: Exception):
 def handle_monthly_increase(config: dict, all_tickers: dict, market: str) -> dict:
     """
     시장(market: "us" / "kr")의 모든 종목 월 증액
-    증액 기록은 시장별로 따로 남긴다 (국내장 증액이 미국장 증액을 막지 않도록)
+    - 증액 기록은 시장별로 따로 남긴다 (국내장 증액이 미국장 증액을 막지 않도록)
+    - 그달 아직 증액하지 않았다면 첫 거래일이 아니어도 증액한다
+      (첫 거래일에 봇이 꺼져 있었어도 그달 증액을 놓치지 않도록)
     Returns: {ticker: (old_base, new_base)}
     """
     this_month = date.today().strftime("%Y-%m")
@@ -167,7 +188,7 @@ def handle_monthly_increase(config: dict, all_tickers: dict, market: str) -> dic
     if this_month == last_month:
         return {}
     
-    if not is_first_trading_day_of_month():
+    if not is_trading_day(market):
         return {}
     
     increases = {}
@@ -222,8 +243,9 @@ def run_us_strategy(api):
     attempted = []   # 주문을 전송한 종목 (오류 시 재시도 여부 판단)
     
     try:
-        # ═══ GBV 실행 ═══
-        for ticker in all_us_tickers.keys():
+        # ═══ GBV 실행 (매도할 종목 먼저 → 매도 대금으로 매수) ═══
+        order = _sells_first(all_us_tickers, prices, holdings, config, outside_tqqq, is_us=True)
+        for ticker in order:
             base = get_base_value(config, ticker)
             trades, holdings, cash_usd = execute_gbv(
                 api, ticker, prices[ticker], base,
@@ -308,8 +330,9 @@ def run_kr_strategy(api):
     attempted = []   # 주문을 전송한 종목 (오류 시 재시도 여부 판단)
     
     try:
-        # ═══ GBV 실행 ═══
-        for ticker in all_kr_tickers.keys():
+        # ═══ GBV 실행 (매도할 종목 먼저 → 매도 대금으로 매수) ═══
+        order = _sells_first(all_kr_tickers, prices, holdings, config, 0, is_us=False)
+        for ticker in order:
             base = get_base_value(config, ticker)
             trades, holdings, cash_krw = execute_gbv(
                 api, ticker, prices[ticker], base,

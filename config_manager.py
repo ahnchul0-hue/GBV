@@ -240,14 +240,3 @@ def _delete_keys(ticker: str):
         f.writelines(new_lines)
 
     logger.info(f"{ticker} 관련 키 삭제 완료")
-
-
-def is_first_trading_day_of_month() -> bool:
-    """이번 달 첫 거래일인지 (평일 기준)"""
-    today = date.today()
-    if today.weekday() >= 5:  # 토요일/일요일
-        return False
-    for d in range(1, today.day):
-        if date(today.year, today.month, d).weekday() < 5:
-            return False
-    return True

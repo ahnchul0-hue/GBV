@@ -17,6 +17,7 @@ from config_manager import (
 from broker import get_broker, validate_api_info, describe_broker
 from strategy import run_us_strategy, run_kr_strategy
 import trade_state
+from market_calendar import is_trading_day, holiday_name
 from notifier import notify_error, _send
 from telegram_handler import start_polling
 
@@ -183,6 +184,7 @@ def main():
             logger.info(f"{label}: 오늘 이미 매매함 (trade_state.json) → 오늘은 다시 매매하지 않음")
     us_pre_notified_today = None
     kr_pre_notified_today = None
+    holiday_notified = {}     # {market: 날짜} 휴장 안내는 하루 한 번만
     prev_us_time = None
     prev_kr_time = None
     
@@ -231,20 +233,31 @@ def main():
                 time.sleep(LOOP_INTERVAL_SEC)
                 continue
             
+            # ── 휴장일 확인 (거래소 휴장일이면 그 시장은 매매하지 않음) ──
+            us_open = is_trading_day("us")
+            kr_open = is_trading_day("kr")
+            for market, label, open_, t in (("us", "미국장", us_open, us_time),
+                                            ("kr", "국내장", kr_open, kr_time)):
+                if not open_ and _is_target_time(t) and holiday_notified.get(market) != today_str:
+                    name = holiday_name(market)
+                    logger.info(f"{label} 휴장일({name}) → 매매하지 않음")
+                    _send(f"🏖 [GBV] 오늘은 {label} 휴장일({name})이라 매매하지 않습니다.")
+                    holiday_notified[market] = today_str
+            
             # ── 미국장 매매 1시간 전 알림 ──
-            if _is_target_time(us_time, offset_min=-60) and us_pre_notified_today != today_str:
+            if us_open and _is_target_time(us_time, offset_min=-60) and us_pre_notified_today != today_str:
                 logger.info("미국장 매매 1시간 전 현황 전송")
                 _notify_pre_trade(api, "미국장")
                 us_pre_notified_today = today_str
             
             # ── 국내장 매매 1시간 전 알림 ──
-            if _is_target_time(kr_time, offset_min=-60) and kr_pre_notified_today != today_str:
+            if kr_open and _is_target_time(kr_time, offset_min=-60) and kr_pre_notified_today != today_str:
                 logger.info("국내장 매매 1시간 전 현황 전송")
                 _notify_pre_trade(api, "국내장")
                 kr_pre_notified_today = today_str
             
             # ── 미국장 매매 ──
-            if _is_target_time(us_time) and not trade_state.traded_today("us"):
+            if us_open and _is_target_time(us_time) and not trade_state.traded_today("us"):
                 logger.info(f"미국장 매매 시간 도달: {us_time}")
                 try:
                     run_us_strategy(api)
@@ -254,7 +267,7 @@ def main():
                     notify_error(f"미국장 매매 에러:\n{str(e)}")
             
             # ── 국내장 매매 ──
-            if _is_target_time(kr_time) and not trade_state.traded_today("kr"):
+            if kr_open and _is_target_time(kr_time) and not trade_state.traded_today("kr"):
                 logger.info(f"국내장 매매 시간 도달: {kr_time}")
                 try:
                     run_kr_strategy(api)

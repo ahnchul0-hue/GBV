@@ -15,6 +15,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import config_manager  # noqa: E402
 import strategy  # noqa: E402
 import trade_state  # noqa: E402
+import market_calendar  # noqa: E402
+from datetime import date  # noqa: E402
 from broker import validate_api_info  # noqa: E402
 
 SAMPLE_CONFIG = """\
@@ -227,7 +229,7 @@ class MonthlyIncreaseTest(unittest.TestCase):
         self.addCleanup(os.remove, self.path)
         patches = [
             mock.patch.object(config_manager, "CONFIG_PATH", self.path),
-            mock.patch.object(strategy, "is_first_trading_day_of_month", return_value=True),
+            mock.patch.object(strategy, "is_trading_day", return_value=True),
             mock.patch.object(strategy, "notify_monthly_increase"),
         ]
         for p in patches:
@@ -270,6 +272,75 @@ class MonthlyIncreaseTest(unittest.TestCase):
         config = config_manager.load_config()
         self.assertEqual(config_manager.get_all_us_tickers(config), {"TQQQ": 10000.0})
         self.assertEqual(config_manager.get_all_kr_tickers(config), {})
+
+    def test_catch_up_when_first_trading_day_was_missed(self):
+        # 첫 거래일에 봇이 꺼져 있었어도, 그달 아직 증액 전이면 다음 거래일에 증액
+        self._write("TQQQ = 10000\nTQQQ_monthly_rate = 0.02\nlast_increased_month_us = 2000-01\n")
+        result = strategy.handle_monthly_increase(config_manager.load_config(), {"TQQQ": 10000.0}, "us")
+        self.assertEqual(result["TQQQ"], (10000.0, 10200.0))
+
+    def test_no_increase_on_market_holiday(self):
+        self._write("TQQQ = 10000\nTQQQ_monthly_rate = 0.02\n")
+        with mock.patch.object(strategy, "is_trading_day", return_value=False):
+            result = strategy.handle_monthly_increase(config_manager.load_config(), {"TQQQ": 10000.0}, "us")
+        self.assertEqual(result, {})
+
+
+class MarketCalendarTest(unittest.TestCase):
+
+    def test_weekend(self):
+        self.assertFalse(market_calendar.is_trading_day("us", date(2026, 10, 3)))   # 토요일
+        self.assertFalse(market_calendar.is_trading_day("kr", date(2026, 10, 4)))   # 일요일
+
+    def test_korean_exchange_holidays(self):
+        self.assertFalse(market_calendar.is_trading_day("kr", date(2026, 9, 25)))   # 추석
+        self.assertFalse(market_calendar.is_trading_day("kr", date(2026, 12, 31)))  # 연말 휴장일
+        self.assertFalse(market_calendar.is_trading_day("kr", date(2026, 5, 1)))    # 노동절
+        self.assertTrue(market_calendar.is_trading_day("us", date(2026, 9, 25)))    # 미국은 개장
+
+    def test_us_exchange_holidays(self):
+        self.assertFalse(market_calendar.is_trading_day("us", date(2026, 11, 26)))  # 추수감사절
+        self.assertFalse(market_calendar.is_trading_day("us", date(2026, 7, 3)))    # 독립기념일(대체)
+        self.assertTrue(market_calendar.is_trading_day("kr", date(2026, 11, 26)))   # 한국은 개장
+
+    def test_holiday_name(self):
+        self.assertIn("추석", market_calendar.holiday_name("kr", date(2026, 9, 25)))
+        self.assertEqual(market_calendar.holiday_name("us", date(2026, 9, 29)), "")
+
+    def test_unknown_market(self):
+        with self.assertRaises(ValueError):
+            market_calendar.holiday_name("jp", date(2026, 9, 29))
+
+
+class SellsFirstTest(unittest.TestCase):
+
+    def test_sell_tickers_come_first_and_keep_config_order(self):
+        tickers = {"TQQQ": 10000.0, "UGL": 5000.0, "SOXL": 3000.0}
+        prices = {"TQQQ": 50.0, "UGL": 30.0, "SOXL": 20.0}
+        holdings = {
+            "TQQQ": {"qty": 180},   # 9,000 < 10,000 → 매수
+            "UGL": {"qty": 200},    # 6,000 > 5,000 → 매도
+            "SOXL": {"qty": 200},   # 4,000 > 3,000 → 매도
+        }
+        with mock.patch.object(strategy, "get_base_value", side_effect=lambda c, t: tickers[t]):
+            order = strategy._sells_first(tickers, prices, holdings, {}, 0, is_us=True)
+        self.assertEqual(order, ["UGL", "SOXL", "TQQQ"])
+
+    def test_outside_tqqq_counts_toward_sell_decision(self):
+        tickers = {"UGL": 5000.0, "TQQQ": 10000.0}
+        prices = {"TQQQ": 50.0, "UGL": 30.0}
+        holdings = {"TQQQ": {"qty": 150}, "UGL": {"qty": 100}}   # TQQQ 150+60=210주 → 매도
+        with mock.patch.object(strategy, "get_base_value", side_effect=lambda c, t: tickers[t]):
+            order = strategy._sells_first(tickers, prices, holdings, {}, 60, is_us=True)
+        self.assertEqual(order, ["TQQQ", "UGL"])
+
+    def test_prefixed_kr_ticker(self):
+        tickers = {"A252670": 800000.0, "005930": 1000000.0}
+        prices = {"A252670": 10000.0, "005930": 70000.0}
+        holdings = {"252670": {"qty": 100}, "005930": {"qty": 10}}   # 1,000,000 > 800,000 → 매도
+        with mock.patch.object(strategy, "get_base_value", side_effect=lambda c, t: tickers[t]):
+            order = strategy._sells_first(tickers, prices, holdings, {}, 0, is_us=False)
+        self.assertEqual(order, ["A252670", "005930"])
 
 
 if __name__ == "__main__":
