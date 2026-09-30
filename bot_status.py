@@ -135,6 +135,9 @@ def health_text(now: datetime = None, title: str = "🩺 [GBV] 봇 상태") -> s
         ("us", "미국장", us_time, get_all_us_tickers(config)),
         ("kr", "국내장", kr_time, get_all_kr_tickers(config)),
     ):
+        if not t:
+            lines.append(f"{label}: 매매 시각 미설정 → 매매 안 함")
+            continue
         if not tickers:
             lines.append(f"{label}: 종목 없음")
             continue

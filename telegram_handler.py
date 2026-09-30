@@ -309,8 +309,11 @@ def setup_handlers(bot):
             
             lines.append("[시스템]")
             lines.append("trading_enabled: " + config.get('TRADING_ENABLED', 'true'))
-            lines.append("us_market_time: " + config.get('US_MARKET_TIME', '19:00'))
-            lines.append("kr_market_time: " + config.get('KR_MARKET_TIME', '09:05'))
+            from config_manager import get_market_times
+            _us_t, _kr_t = get_market_times(config)
+            _off = "(미설정 → 매매 안 함)"
+            lines.append("us_market_time: " + (_us_t or _off))
+            lines.append("kr_market_time: " + (_kr_t or _off))
             lines.append("outside_tqqq: " + config.get('OUTSIDE_TQQQ', '0'))
             lines.append("")
             

@@ -61,8 +61,11 @@ def _is_target_time(time_str: str, offset_min: int = 0) -> bool:
     현재 시간이 목표 시간인지 확인
     offset_min: 양수면 미래, 음수면 과거 시간과 비교 (1시간 전 = -60)
     """
+    try:
+        h, m = map(int, str(time_str).strip().split(":"))
+    except (AttributeError, ValueError):
+        return False        # 빈 값 = 그 시장을 쓰지 않음 (예전에는 여기서 죽었다)
     now = datetime.now()
-    h, m = map(int, time_str.strip().split(":"))
     now_min = now.hour * 60 + now.minute
     target_min = (h * 60 + m + offset_min) % (24 * 60)
     diff = abs(now_min - target_min)
@@ -158,6 +161,9 @@ def main():
         notify_error(f"키움 API 연결 실패로 봇을 시작하지 못했습니다:\n{e}\n\nPC에서 python check_setup.py 로 원인을 확인하세요.")
         return
     logger.info(f"{describe_broker(config)} 초기화 완료")
+    _us_t, _kr_t = get_market_times(config)
+    logger.info(f"매매 시각: 미국장 {_us_t or '미설정(매매 안 함)'} / "
+                f"국내장 {_kr_t or '미설정(매매 안 함)'}")
     if get_dry_run(config):
         _send("🧪 [GBV] 연습 모드(dry_run = true)로 시작합니다. 주문은 보내지 않습니다.")
     

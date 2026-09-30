@@ -924,3 +924,53 @@ class NoRoutineNoticeTest(unittest.TestCase):
         import main
         src = inspect.getsource(main.main)
         self.assertNotIn("offset_min=-60", src)   # 매매 1시간 전 트리거
+
+
+# ─────────────────────────────────────────
+# 매매 시각 미설정 = 그 시장 끄기
+# ─────────────────────────────────────────
+
+class MarketTimeDisabledTest(unittest.TestCase):
+    """예전에는 kr_market_time 을 주석 처리해도 기본값 09:05 가 적용돼서,
+    시장을 껐다고 생각한 상태로 그 시각에 매매가 나갔다. 값을 비우면
+    _is_target_time 이 ValueError 로 죽었다. 둘 다 여기서 막는다.
+    """
+
+    def test_missing_key_disables_the_market(self):
+        us, kr = config_manager.get_market_times({"US_MARKET_TIME": "22:30"})
+        self.assertEqual(us, "22:30")
+        self.assertEqual(kr, "")            # 기본값이 끼어들면 안 된다
+
+    def test_blank_and_off_disable_the_market(self):
+        for value in ("", "   ", "off", "OFF", "no", "false"):
+            with self.subTest(value=value):
+                _, kr = config_manager.get_market_times({"KR_MARKET_TIME": value})
+                self.assertEqual(kr, "")
+
+    def test_valid_time_is_normalised(self):
+        _, kr = config_manager.get_market_times({"KR_MARKET_TIME": "9:5"})
+        self.assertEqual(kr, "09:05")
+
+    def test_malformed_time_disables_rather_than_guessing(self):
+        for value in ("abc", "25:00", "09:70", "0905"):
+            with self.subTest(value=value):
+                with self.assertLogs("config_manager", level="WARNING"):
+                    _, kr = config_manager.get_market_times({"KR_MARKET_TIME": value})
+                self.assertEqual(kr, "")
+
+    def test_blank_time_never_triggers_and_never_raises(self):
+        import main
+        for value in ("", "   ", None):
+            with self.subTest(value=value):
+                self.assertFalse(main._is_target_time(value))
+                self.assertFalse(main._is_target_time(value, offset_min=30))
+
+    def test_health_text_shows_the_market_as_off(self):
+        """실제 config.txt 가 아니라 고정된 설정으로 확인한다"""
+        import bot_status
+        cfg = {"KIWOOM_MODE": "demo", "US_MARKET_TIME": "22:30",   # 국내장 키 없음
+               "TQQQ": "10000", "TRADING_ENABLED": "true"}
+        with mock.patch.object(config_manager, "load_config", return_value=cfg):
+            text = bot_status.health_text(title="t")
+        self.assertIn("국내장: 매매 시각 미설정", text)
+        self.assertNotIn("미국장: 매매 시각 미설정", text)

@@ -88,7 +88,8 @@ def check_config():
             report(OK, f"{name}: {mask(value)}")
 
     us_time, kr_time = cm.get_market_times(config)
-    report(OK, f"매매 시각: 미국장 {us_time} / 국내장 {kr_time}")
+    off = "미설정 → 매매 안 함"
+    report(OK, f"매매 시각: 미국장 {us_time or off} / 국내장 {kr_time or off}")
     us, kr = cm.get_all_us_tickers(config), cm.get_all_kr_tickers(config)
     if us or kr:
         items = [f"{t} ${v:,.0f}" for t, v in us.items()] + [f"{t} ₩{v:,.0f}" for t, v in kr.items()]

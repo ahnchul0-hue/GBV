@@ -69,11 +69,31 @@ def normalize_kr_ticker(ticker: str) -> str:
     return code
 
 
+def _market_time(config: dict, key: str, label: str) -> str:
+    """매매 시각 (HH:MM). 설정이 없거나 비어 있으면 빈 문자열 = 그 시장은 매매하지 않음
+
+    기본값을 넣지 않는다. 예전에는 값이 없으면 09:05 같은 기본값이 적용돼서,
+    설정을 주석 처리해 시장을 껐다고 생각해도 그 시각에 매매가 나갔다.
+    형식이 틀린 경우도 임의의 시각에 매매하지 않도록 끈 것으로 본다.
+    """
+    value = str(config.get(key, "") or "").strip()
+    if value.lower() in ("", "off", "false", "no"):
+        return ""
+    try:
+        h, m = map(int, value.split(":"))
+        if 0 <= h < 24 and 0 <= m < 60:
+            return f"{h:02d}:{m:02d}"
+    except ValueError:
+        pass
+    logger.warning(f"{label} 매매 시각 형식 오류({value!r}) → 그 시장은 매매하지 않습니다")
+    return ""
+
+
 def get_market_times(config: dict) -> tuple:
-    """(us_market_time, kr_market_time)"""
+    """(us_market_time, kr_market_time) — 빈 문자열이면 그 시장은 매매하지 않는다"""
     return (
-        config.get("US_MARKET_TIME", "19:00"),
-        config.get("KR_MARKET_TIME", "09:05")
+        _market_time(config, "US_MARKET_TIME", "미국장"),
+        _market_time(config, "KR_MARKET_TIME", "국내장"),
     )
 
 
