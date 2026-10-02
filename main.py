@@ -25,6 +25,7 @@ from notifier import notify_error, _send
 from telegram_handler import start_polling, stop_polling as stop_telegram_polling
 import single_instance
 import log_redact
+import daily_log
 
 # ─────────────────────────────────────────
 # 로그 설정
@@ -32,17 +33,20 @@ import log_redact
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 
-# 테스트가 import main 하면 이 블록이 그대로 돌아 실제 매매 로그에 가짜 오류가 쌓인다.
-# GBV_LOG_FILE 로 경로를 돌릴 수 있게 해 두고, 테스트는 os.devnull 을 넣는다.
-LOG_FILE = os.environ.get("GBV_LOG_FILE") or os.path.join(
-    LOG_DIR, f"trade_{datetime.now().strftime('%Y%m%d')}.log")
-
 LOG_FORMAT = "%(asctime)s [%(levelname)s] [%(process)d] %(name)s - %(message)s"
 
 # requests 예외에는 요청 URL 이 들어가고, 텔레그램은 URL 경로에 봇 토큰을 담는다.
 # 포매터로 걸어야 메시지뿐 아니라 exc_info 트레이스백에 섞인 토큰까지 가려진다.
 _formatter = log_redact.RedactingFormatter(LOG_FORMAT)
-_file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+
+# 테스트가 import main 하면 이 블록이 그대로 돌아 실제 매매 로그에 가짜 오류가 쌓인다.
+# GBV_LOG_FILE 로 경로를 돌릴 수 있게 해 두고, 테스트는 os.devnull 을 넣는다.
+# 지정이 없으면 날짜가 바뀔 때 그날 파일로 갈아타는 핸들러를 쓴다.
+_override = os.environ.get("GBV_LOG_FILE")
+if _override:
+    _file_handler = logging.FileHandler(_override, encoding="utf-8")
+else:
+    _file_handler = daily_log.DailyFileHandler(LOG_DIR, encoding="utf-8")
 _file_handler.setFormatter(_formatter)
 _console_handler = logging.StreamHandler()
 _console_handler.setFormatter(_formatter)

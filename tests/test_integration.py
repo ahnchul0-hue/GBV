@@ -974,3 +974,155 @@ class MarketTimeDisabledTest(unittest.TestCase):
             text = bot_status.health_text(title="t")
         self.assertIn("국내장: 매매 시각 미설정", text)
         self.assertNotIn("미국장: 매매 시각 미설정", text)
+
+
+# ─────────────────────────────────────────
+# 날짜 바뀌면 로그 파일 갈아타기
+# ─────────────────────────────────────────
+
+class DailyLogHandlerTest(unittest.TestCase):
+    """09-30 에 띄운 봇이 10-02 까지 trade_20260930.log 에 쓰고 있었다.
+    FileHandler 가 파일명을 생성 시점에 고정하기 때문이다.
+    """
+
+    def setUp(self):
+        import daily_log
+        self.dl = daily_log
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def _record(self, text):
+        return logging.LogRecord("t", logging.INFO, __file__, 1, text, (), None)
+
+    def test_switches_file_when_the_day_changes(self):
+        """실제로 겪은 상황 그대로: 09-30 에 띄워서 자정을 넘긴다"""
+        from datetime import datetime as real_dt
+        with mock.patch.object(self.dl, "datetime") as dt:
+            dt.now.return_value = real_dt(2026, 9, 30, 23, 59)
+            h = self.dl.DailyFileHandler(self.tmp.name)
+            self.addCleanup(h.close)
+            h.emit(self._record("자정 전"))
+            h.flush()
+            self.assertEqual(os.path.basename(h.baseFilename), "trade_20260930.log")
+
+            dt.now.return_value = real_dt(2026, 10, 1, 0, 1)
+            h.emit(self._record("자정 후"))
+            h.flush()
+            self.assertEqual(os.path.basename(h.baseFilename), "trade_20261001.log")
+
+        names = sorted(os.listdir(self.tmp.name))
+        self.assertEqual(names, ["trade_20260930.log", "trade_20261001.log"])
+        for name, expected, absent in (
+            ("trade_20260930.log", "자정 전", "자정 후"),
+            ("trade_20261001.log", "자정 후", "자정 전"),
+        ):
+            with open(os.path.join(self.tmp.name, name), encoding="utf-8") as f:
+                body = f.read()
+            self.assertIn(expected, body)
+            self.assertNotIn(absent, body)
+
+    def test_same_day_keeps_one_file(self):
+        from datetime import datetime as real_dt
+        with mock.patch.object(self.dl, "datetime") as dt:
+            dt.now.return_value = real_dt(2026, 9, 30, 9, 0)
+            h = self.dl.DailyFileHandler(self.tmp.name)
+            self.addCleanup(h.close)
+            h.emit(self._record("아침"))
+            dt.now.return_value = real_dt(2026, 9, 30, 22, 30)
+            h.emit(self._record("저녁"))
+            h.flush()
+        self.assertEqual(os.listdir(self.tmp.name), ["trade_20260930.log"])
+
+    def test_file_name_matches_the_log_glob(self):
+        """bot_status.latest_log_file 이 trade_*.log 로 찾는다"""
+        import glob
+        h = self.dl.DailyFileHandler(self.tmp.name)
+        self.addCleanup(h.close)
+        h.emit(self._record("x"))
+        h.flush()
+        self.assertEqual(len(glob.glob(os.path.join(self.tmp.name, "trade_*.log"))), 1)
+
+
+# ─────────────────────────────────────────
+# 폴링 재시도 폭주 / 401 영구 오류
+# ─────────────────────────────────────────
+
+class PollingBackoffTest(unittest.TestCase):
+    """none_stop=False 라 polling() 은 오류를 만나도 예외 없이 반환한다.
+    예전 루프는 그걸 곧바로 다시 불러서, 401 하나로 20분에 1174줄을 쌓았다
+    (2026-09-30 07:27~07:47).
+    """
+
+    MAX_SPINS = 50
+
+    class FakeEvent:
+        """wait 를 기록하고, 정해진 횟수만큼 쉬고 나면 종료 신호를 켠다
+
+        백오프가 사라지면 waits 가 늘지 않아 루프가 영원히 돈다. 그 경우
+        테스트가 멈춰 버리면 회귀를 알아볼 수 없으므로 횟수로 끊는다.
+        """
+        def __init__(self, stop_after, max_spins=50):
+            self.waits = []
+            self.stop_after = stop_after
+            self.spins = 0
+            self.max_spins = max_spins
+
+        def is_set(self):
+            self.spins += 1
+            if self.spins > self.max_spins:
+                raise AssertionError(
+                    f"폴링 루프가 {self.max_spins}회를 넘겨 돌았다 - 백오프 없이 폭주 중")
+            return len(self.waits) >= self.stop_after
+
+        def wait(self, timeout=None):
+            self.waits.append(timeout)
+            return False
+
+    def _run(self, get_me, stop_after=3):
+        import telegram_handler as th
+        bot = mock.MagicMock()
+        bot.get_me.side_effect = get_me
+        bot.polling.side_effect = lambda **kw: None     # 오류로 즉시 반환되는 상황
+        event = self.FakeEvent(stop_after)
+        with mock.patch.object(th, "telebot") as tb, \
+             mock.patch.object(th, "get_telegram_settings", return_value=("T", "123")), \
+             mock.patch.object(th, "setup_handlers"), \
+             mock.patch.object(th, "_add_stranger_guard"), \
+             mock.patch.object(th, "BACKOFF_START_SEC", 1), \
+             mock.patch.object(th, "BACKOFF_MAX_SEC", 4):
+            tb.TeleBot.return_value = bot
+            th.start_polling(event)
+        th._bot = None
+        return bot, event
+
+    def test_transient_failure_backs_off_instead_of_hammering(self):
+        bot, event = self._run(get_me=lambda: None)
+        self.assertEqual(event.waits, [1, 2, 4], "백오프가 커지지 않는다")
+        self.assertEqual(bot.polling.call_count, 3)
+
+    def test_backoff_is_capped(self):
+        _, event = self._run(get_me=lambda: None, stop_after=5)
+        self.assertEqual(event.waits, [1, 2, 4, 4, 4])   # BACKOFF_MAX_SEC 에서 멈춘다
+
+    def test_rejected_token_stops_polling_for_good(self):
+        """401 은 재시도로 안 풀린다. 한 번 알리고 멈춘다 (매매는 계속)"""
+        err = Exception("A request to the Telegram API was unsuccessful. "
+                        "Error code: 401. Description: Unauthorized")
+        bot, event = self._run(get_me=mock.Mock(side_effect=err))
+        bot.polling.assert_not_called()      # 시작 전에 걸러낸다
+        self.assertEqual(event.waits, [])
+
+    def test_token_rejected_mid_run_stops(self):
+        import telegram_handler as th
+        err = Exception("Error code: 401. Description: Unauthorized")
+        bot, event = self._run(get_me=mock.Mock(side_effect=[None, err]))
+        self.assertEqual(bot.polling.call_count, 1)      # 한 번 돌고 멈춘다
+        self.assertEqual(event.waits, [])
+
+    def test_network_error_is_not_mistaken_for_a_bad_token(self):
+        import telegram_handler as th
+        err = Exception("HTTPSConnectionPool(host='api.telegram.org', port=443): Read timed out.")
+        self.assertFalse(th._token_rejected(mock.Mock(get_me=mock.Mock(side_effect=err))))
+        self.assertTrue(th._token_rejected(
+            mock.Mock(get_me=mock.Mock(side_effect=Exception("Error code: 401")))))
+        self.assertFalse(th._token_rejected(mock.Mock(get_me=mock.Mock(return_value=object()))))
