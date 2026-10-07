@@ -56,7 +56,7 @@ python main.py
 PowerShell 에서 (관리자 권한 필요 없음):
 
 ```powershell
-$action = New-ScheduledTaskAction -Execute 'C:\...\GBVun_bot.bat' -WorkingDirectory 'C:\...\GBV'
+$action = New-ScheduledTaskAction -Execute 'C:\...\GBV\run_bot.bat' -WorkingDirectory 'C:\...\GBV'
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
 $settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
             -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable
