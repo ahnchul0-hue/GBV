@@ -48,6 +48,29 @@ pip install -r requirements.txt
 python main.py
 ```
 
+### 자동 시작 (윈도우 작업 스케줄러)
+
+봇을 수동으로 띄우면 원격 세션이 끊기거나 PC 가 재부팅될 때 조용히 멈춥니다.
+`run_bot.bat` 를 작업 스케줄러에 등록해 두면 로그온할 때 자동으로 뜹니다.
+
+PowerShell 에서 (관리자 권한 필요 없음):
+
+```powershell
+$action = New-ScheduledTaskAction -Execute 'C:\...\GBVun_bot.bat' -WorkingDirectory 'C:\...\GBV'
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+$settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
+            -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable
+Register-ScheduledTask -TaskName 'GBV Trading Bot' -Action $action -Trigger $trigger -Settings $settings
+```
+
+- `-ExecutionTimeLimit ([TimeSpan]::Zero)` 가 없으면 작업이 3일 뒤 강제 종료됩니다.
+- 비정상 종료 시 1분 간격으로 3회 재시작합니다. Ctrl+C 로 끝낸 경우는 종료코드가 0 이라
+  재시작하지 않습니다.
+- 이미 봇이 돌고 있으면 단일 실행 잠금이 막아 주므로 중복 실행 걱정은 없습니다.
+- 로그온하지 않아도 뜨게 하려면 작업을 `SYSTEM` 계정으로 바꾸고 트리거를 시작 시로 두면
+  되는데, 콘솔이 보이지 않아 Ctrl+C 로 끄지 못합니다. 손으로 껐다 켜는 일이 많으면
+  로그온 트리거가 편합니다.
+
 ### 설치 점검
 
 ```
