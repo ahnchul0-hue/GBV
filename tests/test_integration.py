@@ -1126,3 +1126,77 @@ class PollingBackoffTest(unittest.TestCase):
         self.assertTrue(th._token_rejected(
             mock.Mock(get_me=mock.Mock(side_effect=Exception("Error code: 401")))))
         self.assertFalse(th._token_rejected(mock.Mock(get_me=mock.Mock(return_value=object()))))
+
+
+# ─────────────────────────────────────────
+# 리포트에 평균단가·평가손익 기록
+# ─────────────────────────────────────────
+
+class ReportPnlTest(unittest.TestCase):
+    """리포트가 주문 기준가만 남겨서, 실제 손익을 알려면 로그에서 예수금 증감을
+    엿새치 역산해야 했다. 체결 결과가 반영된 평균단가로 손익을 함께 적는다.
+    """
+
+    def setUp(self):
+        import reporter
+        self.rp = reporter
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = mock.patch.object(reporter, "REPORT_DIR", self.tmp.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _rows(self, path):
+        import csv
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            return list(csv.reader(f))
+
+    def _save(self, holdings, prices, trades=()):
+        return self.rp.save_report(market="미국장", trades=list(trades), holdings=holdings,
+                                   cash=79644.78, total_assets=90095.07, tqqq_base=10404.0,
+                                   prices=prices, currency="USD")
+
+    def test_holdings_row_carries_avg_cost_and_pnl(self):
+        path = self._save({"TQQQ": {"qty": 124, "avg_price": 78.7208}}, {"TQQQ": 84.51})
+        rows = self._rows(path)
+        self.assertEqual(rows[0], self.rp.HEADER)
+        hold = next(r for r in rows if r[10] == "TQQQ")
+        cols = dict(zip(self.rp.HEADER, hold))
+        self.assertEqual(cols["보유수량"], "124")
+        self.assertEqual(cols["평균단가"], "78.72")
+        self.assertEqual(cols["현재가치"], "10,479.24")
+        self.assertEqual(cols["평가손익"], "+717.86")      # 124 × (84.51 - 78.7208)
+        self.assertEqual(cols["손익률"], "+7.35%")
+
+    def test_price_column_is_named_as_a_reference_not_a_fill(self):
+        """주문 API 는 체결가를 돌려주지 않는다. 이름으로 구분해 둔다"""
+        self.assertIn("주문기준가", self.rp.HEADER)
+        self.assertNotIn("가격", self.rp.HEADER)
+
+    def test_missing_avg_price_leaves_pnl_blank(self):
+        path = self._save({"TQQQ": {"qty": 10}}, {"TQQQ": 84.51})
+        hold = next(r for r in self._rows(path) if r[10] == "TQQQ")
+        cols = dict(zip(self.rp.HEADER, hold))
+        self.assertEqual(cols["평균단가"], "")
+        self.assertEqual(cols["평가손익"], "")             # 추측하지 않는다
+
+    def test_every_row_has_the_same_width(self):
+        path = self._save({"TQQQ": {"qty": 124, "avg_price": 78.7208}}, {"TQQQ": 84.51},
+                          trades=[{"action": "매도", "ticker": "TQQQ", "qty": 5, "price": 84.51},
+                                  {"action": "매수", "ticker": "TQQQ", "qty": 1, "price": 84.51}])
+        widths = {len(r) for r in self._rows(path)}
+        self.assertEqual(widths, {len(self.rp.HEADER)}, "열 수가 어긋난 행이 있다")
+
+    def test_old_layout_is_archived_not_appended_to(self):
+        """컬럼이 다른 옛 파일에 이어 붙이면 열이 어긋난다"""
+        import os as _os
+        path = _os.path.join(self.tmp.name, "미국장.csv")
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            f.write("기록시각,현금잔고,총자산,가격\n2026-09-30,1,2,78.70\n")
+        self._save({"TQQQ": {"qty": 124, "avg_price": 78.7208}}, {"TQQQ": 84.51})
+        names = sorted(_os.listdir(self.tmp.name))
+        self.assertEqual(len(names), 2, f"옛 파일이 보관되지 않았다: {names}")
+        self.assertEqual(self._rows(path)[0], self.rp.HEADER)
+        archived = [n for n in names if n != "미국장.csv"][0]
+        with open(_os.path.join(self.tmp.name, archived), encoding="utf-8-sig") as f:
+            self.assertIn("78.70", f.read())
