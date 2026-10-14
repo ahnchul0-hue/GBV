@@ -14,7 +14,8 @@ import threading
 from datetime import datetime
 
 from config_manager import (
-    load_config, get_market_times, get_trading_enabled, get_dry_run, get_heartbeat_time
+    load_config, get_market_times, get_market_times_raw, describe_market_time,
+    get_trading_enabled, get_dry_run, get_heartbeat_time
 )
 import bot_status
 from broker import get_broker, validate_api_info, describe_broker
@@ -165,9 +166,9 @@ def main():
         notify_error(f"키움 API 연결 실패로 봇을 시작하지 못했습니다:\n{e}\n\nPC에서 python check_setup.py 로 원인을 확인하세요.")
         return
     logger.info(f"{describe_broker(config)} 초기화 완료")
-    _us_t, _kr_t = get_market_times(config)
-    logger.info(f"매매 시각: 미국장 {_us_t or '미설정(매매 안 함)'} / "
-                f"국내장 {_kr_t or '미설정(매매 안 함)'}")
+    _us_raw, _kr_raw = get_market_times_raw(config)
+    logger.info(f"매매 시각: 미국장 {describe_market_time(_us_raw)} / "
+                f"국내장 {describe_market_time(_kr_raw)}")
     if get_dry_run(config):
         _send("🧪 [GBV] 연습 모드(dry_run = true)로 시작합니다. 주문은 보내지 않습니다.")
     
@@ -211,29 +212,33 @@ def main():
             # ── config 재로드 ──
             config = load_config()
             trading_enabled = get_trading_enabled(config)
+            # 타이밍 판정은 오늘의 한국 시각으로, 변경 감지는 설정 문자열로 한다.
+            # '09:30 ET' 는 서머타임이 끝나면 22:30 → 23:30 KST 로 저절로 옮겨 가는데,
+            # 그걸 '사용자가 시각을 바꿨다'고 보고 매매 플래그를 지우면 안 된다.
             us_time, kr_time = get_market_times(config)
+            us_raw, kr_raw = get_market_times_raw(config)
             
             # ── 매매 시간 변경 감지 ──
-            if prev_us_time and us_time != prev_us_time:
+            if prev_us_time and us_raw != prev_us_time:
                 trade_state.clear_today("us")
-                logger.info(f"미국장 매매 시간 변경: {prev_us_time} → {us_time} (플래그 리셋)")
+                logger.info(f"미국장 매매 시간 변경: {prev_us_time} → {us_raw} (플래그 리셋)")
                 _send(
                     f"⏰ [GBV] 매매 시간 변경\n"
-                    f"미국장: {prev_us_time} → {us_time}\n"
+                    f"미국장: {prev_us_time} → {describe_market_time(us_raw)}\n"
                     f"※ 매매 플래그 리셋됨"
                 )
             
-            if prev_kr_time and kr_time != prev_kr_time:
+            if prev_kr_time and kr_raw != prev_kr_time:
                 trade_state.clear_today("kr")
-                logger.info(f"국내장 매매 시간 변경: {prev_kr_time} → {kr_time} (플래그 리셋)")
+                logger.info(f"국내장 매매 시간 변경: {prev_kr_time} → {kr_raw} (플래그 리셋)")
                 _send(
                     f"⏰ [GBV] 매매 시간 변경\n"
-                    f"국내장: {prev_kr_time} → {kr_time}\n"
+                    f"국내장: {prev_kr_time} → {describe_market_time(kr_raw)}\n"
                     f"※ 매매 플래그 리셋됨"
                 )
             
-            prev_us_time = us_time
-            prev_kr_time = kr_time
+            prev_us_time = us_raw
+            prev_kr_time = kr_raw
             
             # ── 매매 비활성화 체크 ──
             if not trading_enabled:

@@ -14,14 +14,17 @@ logger = logging.getLogger(__name__)
 
 REPORT_DIR = os.path.join(os.path.dirname(__file__), "reports")
 
-# 가격 컬럼 이름이 "주문기준가"인 이유: 주문 API 는 접수만 돌려주고 체결가는 주지 않는다.
-# 실제 체결 결과는 다음 잔고 조회의 평균단가(avg_price)에 반영되므로 그쪽을 손익 기준으로 쓴다.
+# "주문기준가"는 수량을 정한 시세, "실효체결가"는 주문 뒤 현금 증감 ÷ 수량 (수수료 포함).
+# 주문 API 는 접수만 돌려주고 체결가를 주지 않아서 현금 차이로 역산한다 (strategy._attach_fill_price).
+# 슬리피지는 비용 방향이 양수 — 매수는 비싸게, 매도는 싸게 체결됐을 때.
 HEADER = [
     "기록시각", "현금잔고", "총자산",
     "원화환산총자산", "환율", "TQQQ기준금",
-    "매매구분", "종목", "수량", "주문기준가",
+    "매매구분", "종목", "수량", "주문기준가", "실효체결가", "슬리피지",
     "잔고종목", "보유수량", "평균단가", "현재가", "현재가치", "평가손익", "손익률",
 ]
+TRADE_COLS = 6      # 매매구분 ~ 슬리피지
+HOLD_COLS = 7       # 잔고종목 ~ 손익률
 
 def _ensure_dir():
     os.makedirs(REPORT_DIR, exist_ok=True)
@@ -83,15 +86,19 @@ def save_report(market: str, trades: list, holdings: dict,
         # 매매 내역
         if trades:
             for i, t in enumerate(trades):
-                price_fmt = f"{t['price']:,.2f}" if currency == "USD" else f"{int(t['price']):,}"
+                money = (lambda v: f"{v:,.2f}") if currency == "USD" else (lambda v: f"{int(v):,}")
+                fill = t.get("fill_price")
+                slip = t.get("slippage_pct")
                 head = ([now_str, cash_fmt, assets_fmt, krw_fmt, rate_fmt, base_fmt]
                         if i == 0 else [""] * 6)
                 writer.writerow(head
-                                + [t["action"], t["ticker"], t["qty"], price_fmt]
-                                + [""] * 7)
+                                + [t["action"], t["ticker"], t["qty"], money(t["price"]),
+                                   money(fill) if fill else "",
+                                   f"{slip:+.2f}%" if slip is not None else ""]
+                                + [""] * HOLD_COLS)
         else:
             writer.writerow([now_str, cash_fmt, assets_fmt, krw_fmt, rate_fmt, base_fmt,
-                             "거래없음", "", "", ""] + [""] * 7)
+                             "거래없음"] + [""] * (TRADE_COLS - 1) + [""] * HOLD_COLS)
 
         # 잔고 현황 (평균단가가 있으면 평가손익까지)
         for ticker, info in holdings.items():
@@ -105,7 +112,7 @@ def save_report(market: str, trades: list, holdings: dict,
             if avg > 0 and curr > 0:
                 pnl_fmt  = f"{value - cost:+,.2f}" if currency == "USD" else f"{int(value - cost):+,}"
                 rate_pnl = f"{(curr / avg - 1) * 100:+.2f}%"
-            writer.writerow([""] * 10 + [
+            writer.writerow([""] * (6 + TRADE_COLS) + [
                 ticker, qty, money(avg) if avg > 0 else "",
                 money(curr), money(value), pnl_fmt, rate_pnl,
             ])

@@ -1160,7 +1160,7 @@ class ReportPnlTest(unittest.TestCase):
         path = self._save({"TQQQ": {"qty": 124, "avg_price": 78.7208}}, {"TQQQ": 84.51})
         rows = self._rows(path)
         self.assertEqual(rows[0], self.rp.HEADER)
-        hold = next(r for r in rows if r[10] == "TQQQ")
+        hold = next(r for r in rows if r[self.rp.HEADER.index("잔고종목")] == "TQQQ")
         cols = dict(zip(self.rp.HEADER, hold))
         self.assertEqual(cols["보유수량"], "124")
         self.assertEqual(cols["평균단가"], "78.72")
@@ -1175,7 +1175,7 @@ class ReportPnlTest(unittest.TestCase):
 
     def test_missing_avg_price_leaves_pnl_blank(self):
         path = self._save({"TQQQ": {"qty": 10}}, {"TQQQ": 84.51})
-        hold = next(r for r in self._rows(path) if r[10] == "TQQQ")
+        hold = next(r for r in self._rows(path) if r[self.rp.HEADER.index("잔고종목")] == "TQQQ")
         cols = dict(zip(self.rp.HEADER, hold))
         self.assertEqual(cols["평균단가"], "")
         self.assertEqual(cols["평가손익"], "")             # 추측하지 않는다

@@ -80,15 +80,18 @@ def clear_errors():
 def next_trade_time(market: str, time_str: str, traded_today: bool, now: datetime = None):
     """다음 매매 예정 시각 (datetime) — 휴장일·주말은 건너뜀. 14일 안에 없으면 None"""
     from market_calendar import is_trading_day
+    from config_manager import resolve_market_time
     now = now or datetime.now()
-    try:
-        h, m = map(int, time_str.strip().split(":"))
-    except ValueError:
+    if not time_str:
         return None
     for offset in range(15):
         d = now.date() + timedelta(days=offset)
         if not is_trading_day(market, d):
             continue
+        hm = resolve_market_time(time_str, d)     # '09:30 ET' 는 날짜마다 KST 가 다르다
+        if not hm:
+            return None
+        h, m = map(int, hm.split(":"))
         at = datetime(d.year, d.month, d.day, h, m)
         if offset == 0 and (traded_today or now > at + timedelta(minutes=1)):
             continue
@@ -110,7 +113,7 @@ def _when_text(at: datetime, now: datetime) -> str:
 # ─────────────────────────────────────────
 
 def health_text(now: datetime = None, title: str = "🩺 [GBV] 봇 상태") -> str:
-    from config_manager import (load_config, get_market_times, get_trading_enabled,
+    from config_manager import (load_config, get_market_times_raw, get_trading_enabled,
                                 get_kiwoom_mode, get_dry_run, get_all_us_tickers,
                                 get_all_kr_tickers)
     from market_calendar import holiday_name
@@ -118,7 +121,7 @@ def health_text(now: datetime = None, title: str = "🩺 [GBV] 봇 상태") -> s
 
     now = now or datetime.now()
     config = load_config()
-    us_time, kr_time = get_market_times(config)
+    us_time, kr_time = get_market_times_raw(config)
     mode = get_kiwoom_mode(config)
 
     lines = [

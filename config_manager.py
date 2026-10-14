@@ -9,7 +9,8 @@ config.txt 읽기/쓰기
 
 import os
 import logging
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.txt")
 logger = logging.getLogger(__name__)
@@ -69,32 +70,117 @@ def normalize_kr_ticker(ticker: str) -> str:
     return code
 
 
+# ─────────────────────────────────────────
+# 매매 시각
+#
+# 'HH:MM' 은 한국 시각. 'HH:MM ET' 처럼 시간대를 붙이면 그 시간대 기준이고
+# 매일 그날의 한국 시각으로 환산한다. 미국 서머타임이 끝나면(11월 첫 일요일)
+# 같은 22:30 KST 가 정규장 개장(09:30 ET)에서 프리마켓(08:30 ET)으로 밀리는데,
+# '09:30 ET' 로 적어 두면 봇이 알아서 23:30 KST 로 옮긴다.
+#
+# 한국 자정을 넘기는 시각(예: 16:00 ET = 다음날 05~06시 KST)은 받지 않는다.
+# market_calendar 가 한국 날짜와 미국 날짜를 같다고 보기 때문이다.
+# ─────────────────────────────────────────
+
+_KST = ZoneInfo("Asia/Seoul")
+MARKET_TIME_ZONES = {"KST": _KST, "ET": ZoneInfo("America/New_York")}
+_OFF_WORDS = ("", "off", "false", "no")
+
+
+def _parse_market_time(value: str):
+    """'HH:MM' / 'HH:MM ET' → (h, m, zone) 또는 None"""
+    parts = str(value or "").split()
+    if len(parts) not in (1, 2):
+        return None
+    try:
+        h, m = map(int, parts[0].split(":"))
+    except ValueError:
+        return None
+    if not (0 <= h < 24 and 0 <= m < 60):
+        return None
+    zone = parts[1].upper() if len(parts) == 2 else "KST"
+    if zone not in MARKET_TIME_ZONES:
+        return None
+    return h, m, zone
+
+
+def resolve_market_time(time_str: str, on_date: date = None) -> str:
+    """설정 문자열 → 그 날짜의 한국 시각 'HH:MM'. 비어 있거나 못 풀면 빈 문자열"""
+    parsed = _parse_market_time(time_str)
+    if parsed is None:
+        return ""
+    h, m, zone = parsed
+    if zone == "KST":
+        return f"{h:02d}:{m:02d}"
+    on_date = on_date or date.today()
+    local = datetime(on_date.year, on_date.month, on_date.day, h, m,
+                     tzinfo=MARKET_TIME_ZONES[zone])
+    kst = local.astimezone(_KST)
+    if kst.date() != on_date:
+        return ""                     # 자정을 넘김 — 검증 단계에서 걸러진다
+    return kst.strftime("%H:%M")
+
+
+def _normalize_market_time(value: str):
+    """(정규화 문자열, 오류 메시지). 끈 경우 ('', None)"""
+    value = str(value or "").strip()
+    if value.lower() in _OFF_WORDS:
+        return "", None
+    parsed = _parse_market_time(value)
+    if parsed is None:
+        return "", f"형식 오류: {value!r} (예: 22:30, 09:30 ET, off)"
+    h, m, zone = parsed
+    text = f"{h:02d}:{m:02d}" if zone == "KST" else f"{h:02d}:{m:02d} {zone}"
+    if zone != "KST":
+        # 여름·겨울 둘 다 한국 자정 안에 들어와야 한다
+        year = date.today().year
+        for mth in (1, 7):
+            if not resolve_market_time(text, date(year, mth, 15)):
+                return "", f"{text} 는 한국 자정을 넘깁니다 (미국 오전 시각만 가능)"
+    return text, None
+
+
+def validate_market_time(value: str) -> str:
+    """/set 입력 검증. 정상이면 정규화 문자열, 아니면 ValueError"""
+    text, err = _normalize_market_time(value)
+    if err:
+        raise ValueError(err)
+    return text
+
+
 def _market_time(config: dict, key: str, label: str) -> str:
-    """매매 시각 (HH:MM). 설정이 없거나 비어 있으면 빈 문자열 = 그 시장은 매매하지 않음
+    """설정 문자열 (정규화). 없거나 비어 있으면 '' = 그 시장은 매매하지 않음
 
     기본값을 넣지 않는다. 예전에는 값이 없으면 09:05 같은 기본값이 적용돼서,
     설정을 주석 처리해 시장을 껐다고 생각해도 그 시각에 매매가 나갔다.
     형식이 틀린 경우도 임의의 시각에 매매하지 않도록 끈 것으로 본다.
     """
-    value = str(config.get(key, "") or "").strip()
-    if value.lower() in ("", "off", "false", "no"):
-        return ""
-    try:
-        h, m = map(int, value.split(":"))
-        if 0 <= h < 24 and 0 <= m < 60:
-            return f"{h:02d}:{m:02d}"
-    except ValueError:
-        pass
-    logger.warning(f"{label} 매매 시각 형식 오류({value!r}) → 그 시장은 매매하지 않습니다")
-    return ""
+    text, err = _normalize_market_time(config.get(key, ""))
+    if err:
+        logger.warning(f"{label} 매매 시각 {err} → 그 시장은 매매하지 않습니다")
+    return text
 
 
-def get_market_times(config: dict) -> tuple:
-    """(us_market_time, kr_market_time) — 빈 문자열이면 그 시장은 매매하지 않는다"""
+def get_market_times_raw(config: dict) -> tuple:
+    """설정 문자열 그대로 ('09:30 ET' 등). 표시·변경 감지용"""
     return (
         _market_time(config, "US_MARKET_TIME", "미국장"),
         _market_time(config, "KR_MARKET_TIME", "국내장"),
     )
+
+
+def get_market_times(config: dict) -> tuple:
+    """오늘 기준 한국 시각 (us, kr). 빈 문자열이면 그 시장은 매매하지 않는다"""
+    us, kr = get_market_times_raw(config)
+    return resolve_market_time(us), resolve_market_time(kr)
+
+
+def describe_market_time(raw: str, on_date: date = None) -> str:
+    """표시용. '09:30 ET (오늘 22:30 KST)' / '22:30' / '미설정 → 매매 안 함'"""
+    if not raw:
+        return "미설정 → 매매 안 함"
+    kst = resolve_market_time(raw, on_date)
+    return raw if kst == raw else f"{raw} (오늘 {kst} KST)"
 
 
 def get_all_us_tickers(config: dict) -> dict:

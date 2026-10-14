@@ -15,6 +15,9 @@ from datetime import date
 # 주문 후 잔고 반영 대기 시간 (초)
 SETTLEMENT_WAIT_SEC = 3
 
+# 실효 체결가가 기준가에서 이 비율 넘게 벗어나면 기록하지 않는다 (잔고 미반영·미체결)
+FILL_SANITY_PCT = 0.10
+
 from config_manager import (
     load_config, get_all_us_tickers, get_all_kr_tickers,
     get_base_value, get_monthly_rate,
@@ -110,14 +113,43 @@ def execute_gbv(api, ticker: str, price: float, base_value: float,
         return trades, holdings, cash
     time.sleep(SETTLEMENT_WAIT_SEC)
     try:
-        if is_us:
-            return trades, *api.get_us_balance()
-        else:
-            return trades, *api.get_kr_balance()
+        new_holdings, new_cash = api.get_us_balance() if is_us else api.get_kr_balance()
     except Exception as e:
         # 주문은 이미 나갔으므로 여기서 실패해도 사이클을 중단하지 않는다
         logger.warning(f"매매 후 잔고 재조회 실패 ({ticker}), 매매 전 잔고 사용: {e}")
         return trades, holdings, cash
+    _attach_fill_price(trades, cash, new_cash, price)
+    return trades, new_holdings, new_cash
+
+
+def _attach_fill_price(trades: list, cash_before: float, cash_after: float,
+                       ref_price: float) -> None:
+    """현금 증감으로 실효 체결가(수수료 포함)를 역산해 거래에 붙인다
+
+    주문 API 는 접수만 돌려주고 체결가는 주지 않는다. execute_gbv 는 한 호출에
+    한 종목·한 주문이므로 현금 차이 ÷ 수량이 그 주문의 실효 단가다. 슬리피지는
+    '비용 방향이 양수' — 매수는 비싸게 샀을 때, 매도는 싸게 팔았을 때 양수다.
+
+    기준가에서 FILL_SANITY_PCT 넘게 벗어나면 잔고가 아직 반영되지 않았거나
+    (미체결) 다른 입출금이 섞인 것이므로 기록하지 않는다. 추측보다 공란이 낫다.
+    """
+    if len(trades) != 1:
+        return
+    t = trades[0]
+    qty = t.get("qty") or 0
+    delta = abs(cash_after - cash_before)
+    if qty <= 0 or delta <= 0 or ref_price <= 0:
+        return
+    fill = delta / qty
+    if abs(fill / ref_price - 1) > FILL_SANITY_PCT:
+        logger.warning(f"{t['ticker']} 실효 체결가 {fill:,.2f} 가 기준가 {ref_price:,.2f} 에서 "
+                       f"{FILL_SANITY_PCT:.0%} 넘게 벗어나 기록하지 않습니다 (미체결 또는 잔고 미반영)")
+        return
+    sign = 1 if t.get("action") == "매수" else -1
+    t["fill_price"] = fill
+    t["slippage_pct"] = sign * (fill / ref_price - 1) * 100
+    logger.info(f"{t['ticker']} 실효 체결가 {fill:,.2f} (기준가 {ref_price:,.2f}, "
+                f"슬리피지 {t['slippage_pct']:+.2f}%)")
 
 
 def _sells_first(tickers: dict, prices: dict, holdings: dict, config: dict,

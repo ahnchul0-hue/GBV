@@ -36,6 +36,36 @@ logger = logging.getLogger(__name__)
 BACKOFF_START_SEC = 1
 BACKOFF_MAX_SEC   = 60
 
+# ─────────────────────────────────────────
+# /set 큰 변경 확인
+#
+# '/set tqqq 1000' 은 기준금을 $10,000 → $1,000 으로 줄여 보유분 90% 를 즉시 판다.
+# 0 하나 빠진 오타가 되돌리기 어려운 매도가 되므로, 기존 값의 2배 이상·절반 이하로
+# 바뀌면 같은 명령 끝에 confirm 을 붙여 다시 보내게 한다. 상태를 저장하지 않는다.
+# ─────────────────────────────────────────
+BIG_CHANGE_FACTOR = 2.0
+
+
+def _big_change(old, new) -> bool:
+    """기존 값 대비 2배 이상 커지거나 절반 이하로 줄면 True. 기존 값이 없거나 0 이면 False"""
+    try:
+        old, new = float(old), float(new)
+    except (TypeError, ValueError):
+        return False
+    if old <= 0 or new <= 0:
+        return False
+    ratio = new / old
+    return ratio >= BIG_CHANGE_FACTOR or ratio <= 1 / BIG_CHANGE_FACTOR
+
+
+def _confirm_text(label: str, old, new, parts: list) -> str:
+    """확인 요청 메시지. parts 는 confirm 을 뗀 원래 명령"""
+    ratio = float(new) / float(old)
+    return (f"⚠️ 큰 변경입니다: {label} {old} → {new} ({ratio:.2g}배)\n"
+            f"맞으면 아래를 그대로 보내세요:\n"
+            f"{' '.join(parts)} confirm")
+
+
 # 전역 bot 객체
 _bot = None
 
@@ -51,7 +81,7 @@ def setup_handlers(bot):
     
     # 증권사 API 임포트 (지연 임포트)
     from broker import get_broker
-    from config_manager import load_config, get_outside_tqqq
+    from config_manager import load_config, get_outside_tqqq, validate_market_time
     
     @bot.message_handler(commands=['set'], func=is_owner)
     def set_value(message):
@@ -83,6 +113,40 @@ def setup_handlers(bot):
             key = parts[1].strip()
             key_lower = key.lower()
             
+            # 큰 변경 확인용 꼬리표 ('/set tqqq 1000 confirm')
+            confirm = parts[-1].lower() == "confirm"
+            if confirm:
+                parts = parts[:-1]
+                if len(parts) < 3:
+                    bot.reply_to(message, "error: 값이 없습니다")
+                    return
+            config_now = load_config()
+            
+            # === 시스템 파라미터 (값에 공백이 올 수 있다: '09:30 ET') ===
+            if key_lower in SYSTEM_KEYS:
+                value = " ".join(parts[2:]).strip()
+                try:
+                    if key_lower == "trading_enabled":
+                        if value.lower() not in ("true", "false"):
+                            raise ValueError("true 또는 false만 가능")
+                    elif "time" in key_lower:
+                        value = validate_market_time(value)
+                    elif key_lower == "outside_tqqq":
+                        if int(value) < 0:
+                            raise ValueError("0 이상이어야 함")
+                        old = config_now.get("OUTSIDE_TQQQ", "0")
+                        if _big_change(old, value) and not confirm:
+                            bot.reply_to(message, _confirm_text("outside_tqqq", old, value, parts))
+                            return
+                except ValueError as e:
+                    bot.reply_to(message, f"error: {str(e)}")
+                    return
+                
+                _set_value(key_lower, value)
+                logger.info(f"파라미터 변경: {key_lower} = {value}")
+                bot.reply_to(message, f"ok\n{key_lower} = {value or '(꺼짐)'}")
+                return
+            
             # === 3개 파라미터: 종목 기준금 + 월증액률 ===
             if len(parts) >= 4:
                 ticker = key.upper()
@@ -100,6 +164,14 @@ def setup_handlers(bot):
                     bot.reply_to(message, f"error: {str(e)}")
                     return
                 
+                old_base = config_now.get(ticker)
+                old_rate = config_now.get(f"{ticker}_MONTHLY_RATE")
+                if _big_change(old_base, base) and not confirm:
+                    bot.reply_to(message, _confirm_text(ticker, old_base, int(base), parts))
+                    return
+                if _big_change(old_rate, rate) and not confirm:
+                    bot.reply_to(message, _confirm_text(f"{ticker}_monthly_rate", old_rate, rate, parts))
+                    return
                 # 기준금 설정
                 _set_value(ticker, str(int(base)))
                 # current_base 리셋
@@ -118,30 +190,8 @@ def setup_handlers(bot):
             # === 2개 파라미터: 시스템 또는 개별 설정 ===
             value = parts[2].strip()
             
-            # 시스템 파라미터
-            if key_lower in SYSTEM_KEYS:
-                # 값 유효성 검사
-                try:
-                    if key_lower == "trading_enabled":
-                        if value.lower() not in ("true", "false"):
-                            raise ValueError("true 또는 false만 가능")
-                    elif "time" in key_lower:
-                        h, m = value.split(":")
-                        if not (0 <= int(h) <= 23 and 0 <= int(m) <= 59):
-                            raise ValueError("시간 형식 오류")
-                    elif key_lower == "outside_tqqq":
-                        if int(value) < 0:
-                            raise ValueError("0 이상이어야 함")
-                except ValueError as e:
-                    bot.reply_to(message, f"error: {str(e)}")
-                    return
-                
-                _set_value(key_lower, value)
-                logger.info(f"파라미터 변경: {key_lower} = {value}")
-                bot.reply_to(message, f"ok\n{key_lower} = {value}")
-                
             # 월증액률
-            elif key_lower.endswith("_monthly_rate"):
+            if key_lower.endswith("_monthly_rate"):
                 try:
                     rate = float(value)
                     if not (0 <= rate <= 1):
@@ -150,6 +200,10 @@ def setup_handlers(bot):
                     bot.reply_to(message, f"error: {str(e)}")
                     return
                 
+                old_rate = config_now.get(key.upper())
+                if _big_change(old_rate, rate) and not confirm:
+                    bot.reply_to(message, _confirm_text(key_lower, old_rate, rate, parts))
+                    return
                 _set_value(key_lower, value)
                 logger.info(f"월증액률 변경: {key_lower} = {value}")
                 bot.reply_to(message, f"ok\n{key_lower} = {value}")
@@ -165,6 +219,10 @@ def setup_handlers(bot):
                     bot.reply_to(message, f"error: {str(e)}")
                     return
                 
+                old_base = config_now.get(ticker)
+                if _big_change(old_base, base) and not confirm:
+                    bot.reply_to(message, _confirm_text(ticker, old_base, int(base), parts))
+                    return
                 _set_value(ticker, str(int(base)))
                 _set_value(f"{ticker}_current_base", str(int(base)))
                 logger.info(f"기준금 변경: {ticker} = {int(base)}, current_base 리셋")
@@ -312,11 +370,10 @@ def setup_handlers(bot):
             
             lines.append("[시스템]")
             lines.append("trading_enabled: " + config.get('TRADING_ENABLED', 'true'))
-            from config_manager import get_market_times
-            _us_t, _kr_t = get_market_times(config)
-            _off = "(미설정 → 매매 안 함)"
-            lines.append("us_market_time: " + (_us_t or _off))
-            lines.append("kr_market_time: " + (_kr_t or _off))
+            from config_manager import get_market_times_raw, describe_market_time
+            _us_t, _kr_t = get_market_times_raw(config)
+            lines.append("us_market_time: " + describe_market_time(_us_t))
+            lines.append("kr_market_time: " + describe_market_time(_kr_t))
             lines.append("outside_tqqq: " + config.get('OUTSIDE_TQQQ', '0'))
             lines.append("")
             
