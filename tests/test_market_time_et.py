@@ -180,6 +180,22 @@ class SetGuardTest(unittest.TestCase):
         self.assertIn("큰 변경", self.send("/set outside_tqqq 1500"))
         self.assertEqual(self.value("OUTSIDE_TQQQ"), "100")
 
+    def test_big_base_change_shows_backtest_note(self):
+        """확인 메시지에 그 비중의 2022 하락장 성적을 붙인다 (자본은 리포트에서)"""
+        import risk_table
+        with mock.patch.object(risk_table, "latest_total_assets", return_value=100_000.0):
+            reply = self.send("/set tqqq 45000")
+        self.assertIn("큰 변경", reply)
+        self.assertIn("MDD -64.0%", reply)
+        self.assertIn("현금 고갈", reply)
+
+    def test_note_is_omitted_when_capital_unknown(self):
+        import risk_table
+        with mock.patch.object(risk_table, "latest_total_assets", return_value=0.0):
+            reply = self.send("/set tqqq 45000")
+        self.assertIn("큰 변경", reply)
+        self.assertNotIn("MDD", reply)
+
     def test_new_ticker_needs_no_confirm(self):
         """기존 값이 없으면 비교 대상이 없다"""
         self.assertTrue(self.send("/set soxl 5000 0.02").startswith("ok"))

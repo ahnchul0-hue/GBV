@@ -24,6 +24,7 @@ telegram_handler.py
 import logging
 import threading
 import telebot
+import risk_table
 from config_manager import (
     load_config, _set_value, _delete_keys,
     get_all_us_tickers, get_all_kr_tickers
@@ -58,12 +59,13 @@ def _big_change(old, new) -> bool:
     return ratio >= BIG_CHANGE_FACTOR or ratio <= 1 / BIG_CHANGE_FACTOR
 
 
-def _confirm_text(label: str, old, new, parts: list) -> str:
-    """확인 요청 메시지. parts 는 confirm 을 뗀 원래 명령"""
+def _confirm_text(label: str, old, new, parts: list, note: str = "") -> str:
+    """확인 요청 메시지. parts 는 confirm 을 뗀 원래 명령. note 는 백테스트 참고줄"""
     ratio = float(new) / float(old)
-    return (f"⚠️ 큰 변경입니다: {label} {old} → {new} ({ratio:.2g}배)\n"
+    text = (f"⚠️ 큰 변경입니다: {label} {old} → {new} ({ratio:.2g}배)\n"
             f"맞으면 아래를 그대로 보내세요:\n"
             f"{' '.join(parts)} confirm")
+    return text + ("\n" + note if note else "")
 
 
 # 전역 bot 객체
@@ -167,7 +169,8 @@ def setup_handlers(bot):
                 old_base = config_now.get(ticker)
                 old_rate = config_now.get(f"{ticker}_MONTHLY_RATE")
                 if _big_change(old_base, base) and not confirm:
-                    bot.reply_to(message, _confirm_text(ticker, old_base, int(base), parts))
+                    bot.reply_to(message, _confirm_text(ticker, old_base, int(base), parts,
+                                                note=risk_table.risk_note(ticker, base)))
                     return
                 if _big_change(old_rate, rate) and not confirm:
                     bot.reply_to(message, _confirm_text(f"{ticker}_monthly_rate", old_rate, rate, parts))
@@ -221,7 +224,8 @@ def setup_handlers(bot):
                 
                 old_base = config_now.get(ticker)
                 if _big_change(old_base, base) and not confirm:
-                    bot.reply_to(message, _confirm_text(ticker, old_base, int(base), parts))
+                    bot.reply_to(message, _confirm_text(ticker, old_base, int(base), parts,
+                                                note=risk_table.risk_note(ticker, base)))
                     return
                 _set_value(ticker, str(int(base)))
                 _set_value(f"{ticker}_current_base", str(int(base)))

@@ -6,3 +6,6 @@ holidays>=0.105         # 한국거래소·뉴욕증권거래소 휴장일
 yfinance
 pandas
 numpy
+
+# weekly_audit.py 전용 (매매 봇은 쓰지 않음)
+anthropic>=1.13

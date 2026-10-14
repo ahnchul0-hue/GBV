@@ -71,6 +71,22 @@ Register-ScheduledTask -TaskName 'GBV Trading Bot' -Action $action -Trigger $tri
   되는데, 콘솔이 보이지 않아 Ctrl+C 로 끄지 못합니다. 손으로 껐다 켜는 일이 많으면
   로그온 트리거가 편합니다.
 
+### 주간 감사 (선택, Claude API)
+
+`weekly_audit.py`는 지난 7일의 로그·리포트·설정 요약을 Claude 에 보내 **세션 누락, 반복 오류, 체결 품질 변화, 설정 변경 흔적** 네 가지만 짚어 텔레그램으로 보냅니다. 주문 권한이 없고 예측·추천을 하지 않습니다. `main.py`는 이 파일을 쓰지 않으므로 주문 경로에는 LLM 이 없습니다.
+
+```
+copy .env.example .env      ← ANTHROPIC_API_KEY 를 채웁니다 (.env 는 git 에 올라가지 않음)
+pip install anthropic
+python weekly_audit.py --stdout     ← 화면에서 먼저 확인
+python weekly_audit.py              ← 텔레그램 발송
+```
+
+- 모델은 기본 `claude-opus-5`, 1회 약 $0.1~0.2 입니다. `.env`에 `GBV_AUDIT_MODEL=claude-sonnet-5` 로 바꿀 수 있습니다.
+- 보내는 자료에서 봇 토큰·API 키는 가려집니다(`log_redact`). 계좌번호·앱키는 아예 넣지 않습니다.
+- 매주 돌리려면 위 자동 시작과 같은 방식으로 작업 스케줄러에 등록하세요 (작업명 `GBV Weekly Audit`, 매주 일요일 09:00 권장 — 08:30 생존 신호 뒤, 휴장일).
+- 같은 내용을 Claude 대화창에 붙여 넣고 물어도 됩니다. API 는 자동화만 삽니다.
+
 ### 설치 점검
 
 ```
