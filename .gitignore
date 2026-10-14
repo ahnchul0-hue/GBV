@@ -21,3 +21,7 @@ config.txt
 # 단일 실행 잠금
 bot.lock*
 bot.pid
+
+# Anthropic API 키 등 비밀 환경변수 - 절대 커밋 금지
+# 새로 설정할 때는 .env.example 을 복사해서 사용하세요
+.env

@@ -824,6 +824,12 @@ class LogRedactTest(unittest.TestCase):
         line = "달러 예수금(d4_usd_fx_entr): $100,000.00"
         self.assertEqual(self.lr.redact(line), line)
 
+    def test_anthropic_key_is_masked_by_shape(self):
+        """접두어 sk-ant- 가 고정이라 값을 등록하지 않아도 잡힌다"""
+        key = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcdef"
+        out = self.lr.redact(f"AuthenticationError: invalid x-api-key {key}")
+        self.assertNotIn(key, out)
+        self.assertIn("sk-ant-***", out)
     def test_formatter_masks_traceback_too(self):
         """logger.error(..., exc_info=True) 의 트레이스백은 getMessage() 에 없다."""
         fmt = self.lr.RedactingFormatter("%(message)s")
@@ -844,6 +850,19 @@ class LogRedactTest(unittest.TestCase):
             logging.LogRecord("t", logging.ERROR, __file__, 1, self.REAL, (), None))
         when, message = bot_status.last_error()
         self.assertNotIn(self.SECRET, message)
+
+
+
+class RepoHygieneTest(unittest.TestCase):
+    """비밀이 든 파일이 공개 저장소에 올라가지 않도록 .gitignore 를 고정한다"""
+
+    def test_secret_files_are_ignored(self):
+        root = os.path.join(os.path.dirname(__file__), "..")
+        with open(os.path.join(root, ".gitignore"), encoding="utf-8") as f:
+            rules = {l.strip() for l in f if l.strip() and not l.startswith("#")}
+        for name in (".env", "config.txt", "kiwoom_token_*.json"):
+            with self.subTest(name=name):
+                self.assertIn(name, rules)
 
 
 # ─────────────────────────────────────────

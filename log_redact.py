@@ -21,6 +21,10 @@ import re
 # .../bot<봇ID>:<토큰>/... 에서 콜론 뒤 토큰만 가린다 (봇 ID 는 디버깅에 쓸모 있고 비밀이 아니다)
 _TELEGRAM_URL_TOKEN = re.compile(r"(/bot\d+:)[A-Za-z0-9_-]{20,}")
 
+# Anthropic API 키는 접두어가 고정돼 있어 값을 등록하지 않아도 모양으로 잡을 수 있다.
+# 감사 스크립트가 예외 메시지에 헤더를 섞어 찍는 경우를 막는다.
+_ANTHROPIC_KEY = re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}")
+
 _secrets = []
 
 
@@ -33,6 +37,7 @@ def add_secret(value):
 
 def redact(text: str) -> str:
     text = _TELEGRAM_URL_TOKEN.sub(r"\1***", text)
+    text = _ANTHROPIC_KEY.sub("sk-ant-***", text)
     for s in _secrets:
         text = text.replace(s, "***")
     return text

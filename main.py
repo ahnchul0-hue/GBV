@@ -150,8 +150,10 @@ def main():
         logger.exception(f"config.txt 를 읽지 못했습니다: {e}")
         logger.error("원인 확인: python check_setup.py")
         return
-    # URL 밖에 맨몸으로 찍히는 경우까지 대비해 실제 토큰도 등록해 둔다
-    log_redact.add_secret(config.get("TELEGRAM_BOT_TOKEN"))
+    # URL 밖에 맨몸으로 찍히는 경우까지 대비해 실제 토큰도 등록해 둔다.
+    # 키움 앱키·시크릿은 접두어가 없어 모양으로 못 잡으므로 값을 직접 등록한다.
+    for key in ("TELEGRAM_BOT_TOKEN", "APP_KEY", "APP_SECRET"):
+        log_redact.add_secret(config.get(key))
 
     error = validate_api_info(config)
     if error:
