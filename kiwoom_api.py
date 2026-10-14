@@ -44,6 +44,9 @@ MAX_PAGES = 20                       # 연속조회 최대 페이지
 
 AUTH_RETRY_CODES = {8005, 8031, 8103}   # 토큰 재발급 후 1회 재시도
 RATE_LIMIT_CODES = {1700, 1701, 1702}   # 유량 초과 → 대기 후 재시도
+# 코드가 아니라 응답 메시지로만 구분되는 일시 장애. 유량 초과와 같은 재시도 정책을 쓴다.
+# RC9002 "모의투자 서비스 지연" — 2026-10-12 에 네 번 연속 나와 그날 미국장 세션을 놓쳤다.
+TRANSIENT_DELAY_MARKS = ("RC9002",)
 
 US_EXCHANGES = ("ND", "NY", "NA")       # NASDAQ, NYSE(Arca 포함), AMEX
 
@@ -103,6 +106,12 @@ def _embedded_code(return_msg):
     """return_msg 안에 '[8005:Token이 유효하지 않습니다]' 형태로 실제 코드가 들어오는 경우"""
     match = _EMBEDDED_CODE_RE.search(str(return_msg or ""))
     return int(match.group(1)) if match else None
+
+
+def _transient_delay(return_msg) -> bool:
+    """'잠시 후 재시도' 류의 일시 장애 응답인지. [2000](RC9002:...) 처럼 괄호 안에만 있어 코드로는 못 잡는다"""
+    text = str(return_msg or "")
+    return any(mark in text for mark in TRANSIENT_DELAY_MARKS)
 
 
 def normalize_kr_code(ticker: str) -> str:
@@ -306,7 +315,8 @@ class KiwoomAPI:
                 self._reissue_token()
                 continue
 
-            if res.status_code == 429 or code in RATE_LIMIT_CODES or embedded in RATE_LIMIT_CODES:
+            if (res.status_code == 429 or code in RATE_LIMIT_CODES or embedded in RATE_LIMIT_CODES
+                    or _transient_delay(data.get("return_msg"))):
                 if rate_retries < RATE_LIMIT_RETRIES:
                     rate_retries += 1
                     time.sleep(1.0 * rate_retries)

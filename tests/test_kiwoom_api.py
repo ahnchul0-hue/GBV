@@ -545,3 +545,31 @@ class UnfilledTest(KiwoomTestCase):
         api, _ = self.make_api({"ust21050": {"return_code": 1999, "return_msg": "오류"}})
         with self.assertRaises(KiwoomError):
             api.get_us_unfilled()
+
+
+class TransientDelayTest(KiwoomTestCase):
+    """RC9002 '모의투자 서비스 지연' 은 코드(2000)가 아니라 메시지로만 구분된다.
+    2026-10-12 에 네 번 연속 나와 그날 미국장 세션을 통째로 놓쳤다.
+    """
+
+    DELAY = {"return_code": 20,
+             "return_msg": "[2000](RC9002:모의투자 서비스가 지연되고 있습니다. 잠시후 재시도 바랍니다.)"}
+
+    def test_retries_then_succeeds(self):
+        api, session = self.make_api({"ust21070": [self.DELAY, self.DELAY, ok(result_list=[])]})
+        data = api._call("ust21070", "/api/us/acnt", {})
+        self.assertEqual(data.get("return_code"), 0)
+        self.assertEqual(session.count("ust21070"), 3)
+
+    def test_gives_up_after_retries(self):
+        api, session = self.make_api({"ust21070": [self.DELAY] * 10})
+        with self.assertRaises(KiwoomError) as cm:
+            api._call("ust21070", "/api/us/acnt", {})
+        self.assertIn("RC9002", str(cm.exception))
+        self.assertEqual(session.count("ust21070"), kiwoom_api.RATE_LIMIT_RETRIES + 1)
+
+    def test_other_errors_do_not_retry(self):
+        api, session = self.make_api({"ust21070": [{"return_code": 20, "return_msg": "[2000](RC9999:다른 오류)"}]})
+        with self.assertRaises(KiwoomError):
+            api._call("ust21070", "/api/us/acnt", {})
+        self.assertEqual(session.count("ust21070"), 1)

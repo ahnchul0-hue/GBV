@@ -58,6 +58,7 @@ bot_status.install_error_handler()   # /health 에서 마지막 오류를 보여
 
 LOOP_INTERVAL_SEC = 30   # 매매 시간 체크 주기
 TIME_TOLERANCE_MIN = 1   # 매매 시간 ±허용 범위
+TRADE_GRACE_MIN = 15     # 목표 시각 뒤 이 시간 안에는 실패해도 계속 재시도 (미체결 확인 30분보다 짧게)
 FILL_CHECK_MIN = 30      # 매매 후 몇 분 뒤 미체결 확인
 
 
@@ -98,6 +99,60 @@ def _maybe_send_heartbeat(sent_date):
     except Exception as e:
         logger.error(f"생존 신호 전송 실패: {e}")
     return today_str
+
+
+def _in_trade_window(time_str: str, grace_min: int = None, now: datetime = None) -> bool:
+    """목표 시각 1분 전부터 grace_min 분 뒤까지 True. 빈 값이면 False
+
+    예전에는 ±1분뿐이라 브로커가 2분만 지연돼도 그날 세션을 통째로 놓쳤다
+    (2026-10-12, RC9002 네 번 → 매매 없음). 창 안에서는 루프마다 다시 시도한다.
+    주문이 한 번이라도 나가면 strategy 가 trade_state 를 먼저 기록하므로
+    재시도가 같은 주문을 두 번 내지는 않는다.
+    """
+    grace_min = TRADE_GRACE_MIN if grace_min is None else grace_min
+    try:
+        h, m = map(int, str(time_str).strip().split(":"))
+    except (AttributeError, ValueError):
+        return False
+    now = now or datetime.now()
+    delta = (now.hour * 60 + now.minute - (h * 60 + m)) % (24 * 60)
+    return delta <= grace_min or delta >= 24 * 60 - TIME_TOLERANCE_MIN
+
+
+def _after_trade_window(time_str: str, grace_min: int = None, now: datetime = None) -> bool:
+    """오늘의 매매 창이 이미 지났으면 True (같은 날 기준)"""
+    grace_min = TRADE_GRACE_MIN if grace_min is None else grace_min
+    try:
+        h, m = map(int, str(time_str).strip().split(":"))
+    except (AttributeError, ValueError):
+        return False
+    now = now or datetime.now()
+    return now.hour * 60 + now.minute > h * 60 + m + grace_min
+
+
+def _trade_if_due(market: str, label: str, time_str: str, is_open: bool, run_strategy,
+                  api, today_str: str, fail_notified: dict, giveup_notified: dict) -> None:
+    """창 안이면 매매를 시도하고 실패는 하루 한 번만 알린다. 창이 닫히면 포기도 한 번만 알린다"""
+    if not is_open or not time_str or trade_state.traded_today(market):
+        return
+    if _in_trade_window(time_str):
+        logger.info(f"{label} 매매 시간 도달: {time_str}")
+        try:
+            run_strategy(api)
+            trade_state.mark_traded(market)
+        except Exception as e:
+            logger.error(f"{label} 매매 중 에러: {e}", exc_info=True)
+            if fail_notified.get(market) != today_str:
+                fail_notified[market] = today_str
+                notify_error(f"{label} 매매 에러:\n{e}\n\n"
+                             f"{TRADE_GRACE_MIN}분 동안 {LOOP_INTERVAL_SEC}초 간격으로 다시 시도합니다.")
+        return
+    if (fail_notified.get(market) == today_str and giveup_notified.get(market) != today_str
+            and _after_trade_window(time_str)):
+        giveup_notified[market] = today_str
+        logger.error(f"{label} 오늘 매매 실패: {TRADE_GRACE_MIN}분 재시도 창이 끝났습니다")
+        notify_error(f"{label} 오늘 매매를 하지 못했습니다 ({TRADE_GRACE_MIN}분 재시도 창 종료).\n"
+                     f"내일 매매 시각에 다시 시도합니다. 필요하면 영웅문에서 잔고를 확인하세요.")
 
 
 def _notify_unfilled(api, market: str):
@@ -191,6 +246,8 @@ def main():
             logger.info(f"{label}: 오늘 이미 매매함 (trade_state.json) → 오늘은 다시 매매하지 않음")
     holiday_notified = {}     # {market: 날짜} 휴장 안내는 하루 한 번만
     fill_checked = {}         # {market: 날짜} 미체결 확인은 하루 한 번만
+    fail_notified = {}        # {market: 날짜} 매매 실패 알림은 하루 한 번만 (창 안에서 30초마다 재시도하므로)
+    giveup_notified = {}      # {market: 날짜} 창이 닫혀 포기했다는 알림도 하루 한 번만
     heartbeat_sent = None     # 생존 신호 보낸 날짜
     prev_us_time = None
     prev_kr_time = None
@@ -258,25 +315,11 @@ def main():
                     _send(f"🏖 [GBV] 오늘은 {label} 휴장일({name})이라 매매하지 않습니다.")
                     holiday_notified[market] = today_str
             
-            # ── 미국장 매매 ──
-            if us_open and _is_target_time(us_time) and not trade_state.traded_today("us"):
-                logger.info(f"미국장 매매 시간 도달: {us_time}")
-                try:
-                    run_us_strategy(api)
-                    trade_state.mark_traded("us")
-                except Exception as e:
-                    logger.error(f"미국장 매매 중 에러: {e}", exc_info=True)
-                    notify_error(f"미국장 매매 에러:\n{str(e)}")
-            
-            # ── 국내장 매매 ──
-            if kr_open and _is_target_time(kr_time) and not trade_state.traded_today("kr"):
-                logger.info(f"국내장 매매 시간 도달: {kr_time}")
-                try:
-                    run_kr_strategy(api)
-                    trade_state.mark_traded("kr")
-                except Exception as e:
-                    logger.error(f"국내장 매매 중 에러: {e}", exc_info=True)
-                    notify_error(f"국내장 매매 에러:\n{str(e)}")
+            # ── 매매 (목표 시각 1분 전 ~ 15분 뒤 창 안에서, 실패하면 루프마다 재시도) ──
+            _trade_if_due("us", "미국장", us_time, us_open, run_us_strategy, api,
+                          today_str, fail_notified, giveup_notified)
+            _trade_if_due("kr", "국내장", kr_time, kr_open, run_kr_strategy, api,
+                          today_str, fail_notified, giveup_notified)
             
             # ── 매매 후 미체결 확인 ──
             for market, t in (("us", us_time), ("kr", kr_time)):
