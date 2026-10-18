@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 from datetime import date, datetime, timedelta
 
@@ -128,22 +129,44 @@ def collect_logs(days: int, today: date = None) -> str:
     return "\n".join(out) if out else "(해당 기간 로그 없음)"
 
 
+REPORT_GLOSSARY = ("컬럼 설명: 주문기준가=수량을 정한 시세 / 실효체결가=주문 전후 현금차÷수량(수수료 포함) / "
+                   "슬리피지=비용 기준이라 +면 불리(매수는 비싸게, 매도는 싸게 체결), -면 유리")
+
+
 def collect_reports(max_rows: int = MAX_REPORT_ROWS) -> str:
-    out = []
+    """현재 리포트 + 보관본
+
+    컬럼이 바뀌면 reporter 가 옛 파일을 <시장>_<시각>.csv 로 밀어내므로, 현재 파일만 보면
+    그 전 거래가 사라진다. 10-18 감사가 10-13 거래를 '기록 누락'으로 오인한 원인이다.
+    """
+    out = [REPORT_GLOSSARY]
     for name in ("미국장", "국내장"):
-        path = os.path.join(REPORT_DIR, f"{name}.csv")
-        if not os.path.exists(path):
-            continue
-        with open(path, newline="", encoding="utf-8-sig") as f:
-            rows = [r for r in csv.reader(f) if any(c.strip() for c in r)]
-        if not rows:
-            continue
-        header, body = rows[0], rows[1:]
-        body = [r for r in body if not r[0].startswith("─")]
-        out.append(f"## reports/{name}.csv (최근 {min(len(body), max_rows)}행 / 전체 {len(body)}행)")
-        out.append(",".join(header))
-        out.extend(",".join(r) for r in body[-max_rows:])
-    return "\n".join(out) if out else "(리포트 없음)"
+        files = sorted(glob.glob(os.path.join(REPORT_DIR, f"{name}_*.csv")))   # 이름에 시각이 있어 시간순
+        live = os.path.join(REPORT_DIR, f"{name}.csv")
+        if os.path.exists(live):
+            files.append(live)                                                  # 현재 파일이 가장 최근
+        for path in files:
+            with open(path, newline="", encoding="utf-8-sig") as f:
+                rows = [r for r in csv.reader(f) if any(c.strip() for c in r)]
+            if not rows:
+                continue
+            header, body = rows[0], [r for r in rows[1:] if not r[0].startswith("─")]
+            tag = "현재" if path == live else "보관본"
+            out.append(f"## reports/{os.path.basename(path)} ({tag}, 최근 {min(len(body), max_rows)}행 / 전체 {len(body)}행)")
+            out.append(",".join(header))
+            out.extend(",".join(r) for r in body[-max_rows:])
+    return "\n".join(out) if len(out) > 1 else "(리포트 없음)"
+
+
+def collect_recent_commits(days: int = 7) -> str:
+    """최근 커밋. 설정·동작 변화가 코드 변경과 나란히 보이면 '드리프트'와 '조치됨'을 가릴 수 있다"""
+    try:
+        r = subprocess.run(["git", "log", f"--since={days} days ago", "--format=%ad %s", "--date=short"],
+                           cwd=HERE, capture_output=True, timeout=10)
+        text = r.stdout.decode("utf-8", "replace").strip()
+    except Exception:
+        return ""                                   # git 이 없으면 이 절만 빠진다
+    return "## 최근 코드 변경 (git log)\n" + (text or "(없음)")
 
 
 def collect_state_and_config() -> str:
@@ -182,6 +205,7 @@ def collect_context(days: int = 7, today: date = None) -> str:
     parts = [
         f"# GBV 주간 감사 자료  (생성 {datetime.now():%Y-%m-%d %H:%M}, 기간 {days}일)",
         collect_state_and_config(),
+        collect_recent_commits(days),
         collect_reports(),
         collect_logs(days, today),
     ]
@@ -202,13 +226,15 @@ SYSTEM_PROMPT = """당신은 TQQQ 밸류 애버리징 자동매매 봇(GBV)의 �
 
 1. 세션 누락: 매매가 있어야 할 거래일에 '매매 시작'이 없는 날이 있는가. 주말·휴장은 제외.
 2. 오류: WARNING/ERROR 중 일시적 네트워크 끊김(자동 복구)이 아닌 것. 반복·패턴·새로운 유형.
-3. 체결 품질: 실효체결가·슬리피지의 추세. 특히 매매 시각이 바뀐 전후 비교.
+3. 체결 품질: 실효체결가·슬리피지의 추세. 슬리피지는 비용 기준이라 매수·매도 모두 +면 불리한 체결이다 — 부호를 가격 방향으로 읽지 않는다. 특히 매매 시각이 바뀐 전후 비교.
 4. 설정 드리프트: 기준금·매매 시각·종목·월증액 변경 흔적과 그 시점. 의도된 것으로 보이는지.
 
 규칙
 - 각 항목은 근거 숫자(날짜·시각·금액·건수)를 인용한다. 근거 없는 추정은 "확인 불가"로 적는다.
 - 문제 없으면 "이상 없음"이라고 짧게 쓴다. 억지로 지적하지 않는다.
 - 전체 1200자 이내, 한국어, 항목당 1~3문장. 마지막 줄에 '요약: 정상 / 주의 / 조치 필요' 중 하나.
+- '최근 코드 변경'에 해당 수정이 보이면 그 문제는 "조치됨"으로 적고 '조치 필요'에서 뺀다.
+  어떤 기록(예: 실효체결가)이 기능 추가 날짜 이전에 없는 것은 누락이 아니다.
 - 투자 판단, 수익률 평가, 전략 변경 권고는 하지 않는다."""
 
 

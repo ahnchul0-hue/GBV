@@ -131,6 +131,46 @@ class CollectTest(unittest.TestCase):
         self.assertIn("(중간 생략)", out)
 
 
+class ArchiveAndCommitsTest(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        p = mock.patch.object(wa, "REPORT_DIR", self.tmp.name)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _csv(self, name, header, rows):
+        with open(os.path.join(self.tmp.name, name), "w", newline="", encoding="utf-8-sig") as f:
+            f.write(header + chr(10) + chr(10).join(rows) + chr(10))
+
+    def test_archived_reports_are_included_in_order(self):
+        """컬럼이 바뀌어 보관본으로 밀려난 거래가 감사 자료에서 사라지면 안 된다"""
+        self._csv("미국장_20261014_223025.csv", "기록시각,총자산", ["2026-10-13 22:29,100000"])
+        self._csv("미국장.csv", "기록시각,총자산,실효체결가", ["2026-10-14 22:30,99745,77.13"])
+        out = wa.collect_reports()
+        self.assertLess(out.index("미국장_20261014_223025.csv (보관본"), out.index("미국장.csv (현재"))
+        self.assertIn("2026-10-13 22:29,100000", out)
+        self.assertIn("컬럼 설명", out)
+        self.assertIn("+면 불리", out)
+
+    def test_no_reports_at_all(self):
+        self.assertEqual(wa.collect_reports(), "(리포트 없음)")
+
+    def test_recent_commits_present_and_graceful(self):
+        fake = mock.Mock(stdout=("2026-10-14 Keep retrying a failed session" + chr(10)).encode("utf-8"))
+        with mock.patch.object(wa.subprocess, "run", return_value=fake):
+            out = wa.collect_recent_commits(7)
+        self.assertIn("최근 코드 변경", out)
+        self.assertIn("Keep retrying", out)
+        with mock.patch.object(wa.subprocess, "run", side_effect=FileNotFoundError("git")):
+            self.assertEqual(wa.collect_recent_commits(7), "")
+
+    def test_prompt_states_slippage_convention(self):
+        self.assertIn("비용 기준", wa.SYSTEM_PROMPT)
+        self.assertIn("조치됨", wa.SYSTEM_PROMPT)
+
+
 class SendResultTest(unittest.TestCase):
 
     def test_telegram_length_is_capped(self):
