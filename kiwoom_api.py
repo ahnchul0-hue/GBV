@@ -47,6 +47,10 @@ RATE_LIMIT_CODES = {1700, 1701, 1702}   # 유량 초과 → 대기 후 재시도
 # 코드가 아니라 응답 메시지로만 구분되는 일시 장애. 유량 초과와 같은 재시도 정책을 쓴다.
 # RC9002 "모의투자 서비스 지연" — 2026-10-12 에 네 번 연속 나와 그날 미국장 세션을 놓쳤다.
 TRANSIENT_DELAY_MARKS = ("RC9002",)
+# 타임아웃·연결 오류 재시도 — 조회 전용. 주문은 서버에 닿았는지 알 수 없어 다시 보내면 중복 주문이 된다.
+# 2026-10-19: 체결 뒤 잔고 재조회가 Read timeout 한 번으로 실패해 리포트 행과 완료 알림이 빠졌다.
+NET_RETRIES = 2
+ORDER_API_IDS = {"ust20000", "ust20001", "kt10000", "kt10001"}
 
 US_EXCHANGES = ("ND", "NY", "NA")       # NASDAQ, NYSE(Arca 포함), AMEX
 
@@ -272,10 +276,11 @@ class KiwoomAPI:
         TR 1회 호출. (data, response_headers) 반환
         - 토큰 만료(401, 8005/8031/8103) → 재발급 후 1회 재시도
         - 유량 초과(429, 1700~1702) → 대기 후 재시도 (서버가 처리하지 않은 요청이라 주문도 안전)
-        - 타임아웃/네트워크 오류는 재시도하지 않음 (주문 중복 방지)
+        - 타임아웃/네트워크 오류: 조회는 NET_RETRIES 회 재시도, 주문은 재시도하지 않음 (중복 주문 방지)
         """
         auth_retried = False
         rate_retries = 0
+        net_retries = 0
         while True:
             self._ensure_token()
             headers = {
@@ -288,12 +293,20 @@ class KiwoomAPI:
                 headers["next-key"] = cont_key
 
             self._throttle()
-            res = self.session.post(
-                f"{self.base_url}{path}",
-                headers=headers,
-                json=body,
-                timeout=REQUEST_TIMEOUT_SEC,
-            )
+            try:
+                res = self.session.post(
+                    f"{self.base_url}{path}",
+                    headers=headers,
+                    json=body,
+                    timeout=REQUEST_TIMEOUT_SEC,
+                )
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                if api_id not in ORDER_API_IDS and net_retries < NET_RETRIES:
+                    net_retries += 1
+                    logger.warning(f"{api_id} 네트워크 오류, 재시도 {net_retries}/{NET_RETRIES}: {e}")
+                    time.sleep(1.0 * net_retries)
+                    continue
+                raise
 
             if res.status_code == 401 and not auth_retried:
                 auth_retried = True

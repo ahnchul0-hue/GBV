@@ -142,13 +142,25 @@ class StrategyTest(unittest.TestCase):
              mock.patch.object(strategy, "get_base_value", return_value=800000.0):
             strategy.run_kr_strategy(broker)
 
-    def test_failure_after_order_does_not_propagate(self):
-        # 주문 후 오류가 main까지 올라가면 매매 시간 창 안에서 같은 주문이 다시 나간다
+    def test_refresh_failure_after_order_still_completes_the_cycle(self):
+        """2026-10-19: 체결 뒤 잔고 재조회가 타임아웃났다고 리포트·완료 알림까지 버리면 안 된다"""
         broker = FakeBroker({"252670": {"qty": 100, "avg_price": 10000.0}}, fail_balance_after_order=True)
         self._run_kr_cycle(broker)   # 예외 없이 종료
         self.assertEqual(len(broker.orders), 1)
+        strategy.notify_error.assert_not_called()          # 조회 실패는 경고 로그로 충분
+        strategy.save_report.assert_called_once()
+        strategy.notify_cycle_complete.assert_called_once()
+
+    def test_failure_after_order_does_not_propagate(self):
+        # 주문 후 오류가 main까지 올라가면 매매 시간 창 안에서 같은 주문이 다시 나간다
+        broker = FakeBroker({"252670": {"qty": 100, "avg_price": 10000.0}})
+        strategy.save_report.side_effect = OSError("디스크 가득 참")
+        self._run_kr_cycle(broker)   # 예외 없이 종료
+        self.assertEqual(len(broker.orders), 1)
         strategy.notify_error.assert_called_once()
-        self.assertIn("재시도하지 않습니다", strategy.notify_error.call_args[0][0])
+        message = strategy.notify_error.call_args[0][0]
+        self.assertIn("재시도하지 않습니다", message)
+        self.assertIn("주문은 이미 접수됐습니다", message)
 
     def test_failure_before_order_propagates_for_retry(self):
         broker = FakeBroker({})

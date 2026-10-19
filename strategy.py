@@ -204,7 +204,8 @@ def _stop_after_orders(market: str, attempted: list, exc: Exception):
     notify_error(
         f"{market} 매매 도중 오류 (주문 전송: {', '.join(attempted)})\n"
         f"{exc}\n"
-        f"※ 중복 주문 방지를 위해 오늘 {market} 매매는 재시도하지 않습니다. 잔고를 확인하세요."
+        f"※ 주문은 이미 접수됐습니다 — 체결·잔고는 /balance 로 확인하세요. "
+        f"중복 주문 방지를 위해 오늘 {market} 매매는 재시도하지 않습니다."
     )
 
 
@@ -250,6 +251,19 @@ def handle_monthly_increase(config: dict, all_tickers: dict, market: str) -> dic
 # 미국장 전략
 # ════════════════════════════════════════════
 
+def _refresh_balance(fetch, holdings, cash, market: str):
+    """매매 뒤 잔고 재조회. 실패하면 직전 값(execute_gbv 가 돌려준 체결 반영 잔고)을 쓴다
+
+    여기서부터는 주문과 무관한 뒷정리다. 2026-10-19 에 이 재조회가 타임아웃나면서
+    체결은 됐는데 리포트 행과 완료 알림이 빠졌다. 조회 실패로 사이클을 멈출 이유가 없다.
+    """
+    try:
+        return fetch()
+    except Exception as e:
+        logger.warning(f"{market} 매매 후 잔고 재조회 실패, 직전 잔고 사용: {e}")
+        return holdings, cash
+
+
 def run_us_strategy(api):
     """미국장 GBV 전략 실행"""
     logger.info("━━━ 미국장 매매 시작 ━━━")
@@ -294,7 +308,7 @@ def run_us_strategy(api):
         # 최종 잔고 및 총 자산 계산 (마지막 종목 체결 반영 대기)
         if all_trades:
             time.sleep(SETTLEMENT_WAIT_SEC)
-        holdings, cash_usd = api.get_us_balance()
+        holdings, cash_usd = _refresh_balance(api.get_us_balance, holdings, cash_usd, "미국장")
         total_assets = cash_usd
         for ticker, info in holdings.items():
             total_assets += info["qty"] * prices.get(ticker, 0)
@@ -381,7 +395,7 @@ def run_kr_strategy(api):
         # 최종 잔고 및 총 자산 (마지막 종목 체결 반영 대기)
         if all_trades:
             time.sleep(SETTLEMENT_WAIT_SEC)
-        holdings, cash_krw = api.get_kr_balance()
+        holdings, cash_krw = _refresh_balance(api.get_kr_balance, holdings, cash_krw, "국내장")
         total_assets = cash_krw
         for ticker, info in holdings.items():
             total_assets += info["qty"] * prices.get(ticker, 0)

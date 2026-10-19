@@ -573,3 +573,25 @@ class TransientDelayTest(KiwoomTestCase):
         with self.assertRaises(KiwoomError):
             api._call("ust21070", "/api/us/acnt", {})
         self.assertEqual(session.count("ust21070"), 1)
+
+
+class NetworkRetryTest(KiwoomTestCase):
+    """2026-10-19: 체결 뒤 잔고 재조회가 Read timeout 한 번으로 실패하자 리포트·완료 알림이 빠졌다.
+    조회는 다시 해도 안전하다. 주문은 서버에 닿았는지 알 수 없어 그대로 둔다.
+    """
+
+    def test_query_timeout_is_retried(self):
+        api, session = self.make_api({"ust21160": [requests.Timeout("read"), ok(d0_usd_fx_entr="1.00")]})
+        self.assertEqual(api._call("ust21160", "/api/us/acnt", {}).get("return_code"), 0)
+        self.assertEqual(session.count("ust21160"), 2)
+
+    def test_query_gives_up_after_net_retries(self):
+        api, session = self.make_api({"ust21160": [requests.ConnectionError("down")] * 5})
+        with self.assertRaises(requests.ConnectionError):
+            api._call("ust21160", "/api/us/acnt", {})
+        self.assertEqual(session.count("ust21160"), kiwoom_api.NET_RETRIES + 1)
+
+    def test_order_timeout_still_not_retried(self):
+        api, session = self.make_api({"ka10001": ok(cur_prc="10000"), "kt10000": [requests.Timeout("t")]})
+        self.assertFalse(api.buy_kr("252670", 1, 10000))
+        self.assertEqual(session.count("kt10000"), 1)
