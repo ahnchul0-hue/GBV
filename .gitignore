@@ -25,3 +25,7 @@ bot.pid
 # Anthropic API 키 등 비밀 환경변수 - 절대 커밋 금지
 # 새로 설정할 때는 .env.example 을 복사해서 사용하세요
 .env
+
+# AI 실험실 산출물 (그림자 트레이더 상태·결정, 리서처 메모·시세 캐시)
+shadow/
+research/

@@ -200,6 +200,15 @@ def collect_state_and_config() -> str:
     return "\n".join(out)
 
 
+def collect_shadow() -> str:
+    """그림자 트레이더 vs 봇 비교표 (브랜치 claude/ai-lab). 없으면 그 사실만 적는다"""
+    try:
+        import shadow_trader
+        return shadow_trader.report_text(for_audit=True)
+    except Exception as e:                 # 모듈이 없거나 기록이 없어도 감사는 계속한다
+        return f"## 그림자 트레이더 비교: 없음 ({type(e).__name__})"
+
+
 def collect_context(days: int = 7, today: date = None) -> str:
     today = today or date.today()
     parts = [
@@ -207,6 +216,7 @@ def collect_context(days: int = 7, today: date = None) -> str:
         collect_state_and_config(),
         collect_recent_commits(days),
         collect_reports(),
+        collect_shadow(),
         collect_logs(days, today),
     ]
     text = log_redact.redact("\n\n".join(parts))
@@ -228,6 +238,7 @@ SYSTEM_PROMPT = """당신은 TQQQ 밸류 애버리징 자동매매 봇(GBV)의 �
 2. 오류: WARNING/ERROR 중 일시적 네트워크 끊김(자동 복구)이 아닌 것. 반복·패턴·새로운 유형.
 3. 체결 품질: 실효체결가·슬리피지의 추세. 슬리피지는 비용 기준이라 매수·매도 모두 +면 불리한 체결이다 — 부호를 가격 방향으로 읽지 않는다. 특히 매매 시각이 바뀐 전후 비교.
 4. 설정 드리프트: 기준금·매매 시각·종목·월증액 변경 흔적과 그 시점. 의도된 것으로 보이는지.
+5. 그림자 AI (있을 때만): 봇 대비 누적수익률·MDD 차이를 한 줄로. 평가·권고는 하지 않는다.
 
 규칙
 - 각 항목은 근거 숫자(날짜·시각·금액·건수)를 인용한다. 근거 없는 추정은 "확인 불가"로 적는다.

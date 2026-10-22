@@ -87,6 +87,24 @@ python weekly_audit.py              ← 텔레그램 발송
 - 매주 돌리려면 위 자동 시작과 같은 방식으로 작업 스케줄러에 등록하세요 (작업명 `GBV Weekly Audit`, 매주 일요일 09:00 권장 — 08:30 생존 신호 뒤, 휴장일).
 - 같은 내용을 Claude 대화창에 붙여 넣고 물어도 됩니다. API 는 자동화만 삽니다.
 
+### AI 실험실 (선택, Claude API)
+
+"AI 에게 매매를 맡기면 더 낫나"를 **돈을 걸지 않고** 확인하는 두 도구입니다. 둘 다 주문 API 를 import 하지 않고(`tests/test_ai_lab.py` 의 SafetyBeltTest 가 강제), 봇 설정도 바꾸지 않습니다. `.env` 의 `ANTHROPIC_API_KEY` 를 씁니다.
+
+```
+python shadow_trader.py --dry-run     ← Claude 호출 없이 판단 자료만 확인
+python shadow_trader.py --stdout      ← 오늘 판단 → 가상 체결 → 화면 (--stdout 없이면 텔레그램)
+python shadow_trader.py --report      ← 지금까지 봇 vs 그림자 비교표
+python ai_researcher.py --dry-run     ← 현재 규칙의 세 구간 성적표
+python ai_researcher.py --stdout      ← 변형 제안 → 백테스트 검증 → research/날짜.md
+```
+
+- **그림자 트레이더** (`shadow_trader.py`): 매 거래일, 봇이 매매 시각에 로그에 적은 **같은 시세**로 Claude 가 매수·매도·관망을 정하고 `shadow/` 안에서만 가상 체결합니다(슬리피지 0.3%, 봇 실측치). 출발선은 첫 실행 때 봇 계좌를 복사합니다. 봇이 아직 시세를 못 적었으면 최대 10분 기다리고, 그래도 없으면 yfinance 1분봉을 쓰되 출처를 기록합니다. 졸업 기준(60거래일 이상·수익률이 봇 이상·MDD 가 봇보다 나쁘지 않음)은 `--report` 가 판정만 하고 **자동으로 하는 일은 없습니다.** 주간 감사 자료에도 비교표가 들어갑니다.
+- **AI 리서처** (`ai_researcher.py`): 매주, Claude 가 `rules_lab.RuleParams` 의 숫자만 최대 5개 제안하고, 코로나 2020·2022 하락·2022-23 회복·최근 12개월 네 구간을 백테스트해 **위기 구간 셋을 모두 이기고(+0.5%p 이상, MDD 5%p 넘게 악화 없음) 자금부족이 없는** 것만 통과로 적습니다. 순수 하락 해(2022)를 따로 두는 이유는 회복까지 포함한 구간만 보면 노출만 키운 제안이 전부 이기기 때문입니다. 통과해도 설정은 바꾸지 않고 `research/` 메모와 텔레그램 요약만 남깁니다. 적용은 `/set` 으로 사람이 합니다.
+- `rules_lab.py` 는 훅을 모두 끄면 `backtest_dual.run_bucket` 과 센트 단위로 같습니다(테스트로 고정). 허용 범위(`BOUNDS`) 밖 제안은 자동 탈락합니다.
+- 작업 스케줄러 등록명: `GBV Shadow Trader` (월~금 22:35 — 스크립트가 봇의 매매 시각(ET→KST, 서머타임 반영) 5분 뒤까지 스스로 기다립니다), `GBV AI Researcher` (일 09:30). 1회 비용은 각각 약 $0.05~0.2.
+- `.env` 에 `GBV_SHADOW_MODEL` / `GBV_RESEARCH_MODEL` 로 모델을 바꿀 수 있습니다.
+
 ### 설치 점검
 
 ```
