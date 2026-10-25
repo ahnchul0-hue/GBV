@@ -26,14 +26,23 @@ def get_telegram_settings() -> tuple:
     return token, str(chat_id).strip()
 
 
-def _send(message: str):
-    """텔레그램 메시지 전송"""
+def _send(message: str) -> bool:
+    """텔레그램 메시지 전송. 전달됐으면 True.
+
+    응답을 보지 않으면 토큰·채팅 ID 가 틀려도 조용히 사라진다 — 2026-10-25 감사에서 지적.
+    """
     token, chat_id = get_telegram_settings()
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
-        requests.post(url, json={"chat_id": chat_id, "text": message}, timeout=10)
+        r = requests.post(url, json={"chat_id": chat_id, "text": message}, timeout=10)
     except Exception as e:
         logger.error(f"텔레그램 전송 오류: {e}")
+        return False
+    status = getattr(r, "status_code", 200)
+    if isinstance(status, int) and status != 200:
+        logger.error(f"텔레그램 전송 실패: HTTP {status} {str(getattr(r, 'text', ''))[:160]}")
+        return False
+    return True
 
 
 def _fmt_price(price: float, is_us: bool) -> str:
