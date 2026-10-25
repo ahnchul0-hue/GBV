@@ -23,6 +23,7 @@ telegram_handler.py
 
 import logging
 import threading
+import time
 import telebot
 import risk_table
 from config_manager import (
@@ -36,6 +37,14 @@ logger = logging.getLogger(__name__)
 # 폴링이 오류로 끊겼을 때 재시도 간격 (초). 1 → 2 → 4 … 60 에서 멈춘다
 BACKOFF_START_SEC = 1
 BACKOFF_MAX_SEC   = 60
+
+# 401(토큰 거부) 판정. 2026-10-23 23:00 에 텔레그램이 잠깐 401 을 돌려줬고, 한 번의 확인으로
+# 멀쩡한 토큰을 '영구 거부'로 판정해 이틀 동안 명령을 못 받았다(알림은 같은 토큰으로 계속 갔다).
+# 그래서 ① 간격을 두고 연속 TOKEN_CHECKS 번 401 이어야 믿고, ② 믿은 뒤에도 TOKEN_RECHECK_SEC 마다
+# 다시 확인해 살아나면 폴링을 재개한다. config.txt 의 토큰이 바뀌었으면 새 토큰으로 확인한다.
+TOKEN_CHECKS        = 3
+TOKEN_CHECK_GAP_SEC = 60
+TOKEN_RECHECK_SEC   = 600
 
 # ─────────────────────────────────────────
 # /set 큰 변경 확인
@@ -492,21 +501,60 @@ def stop_polling():
             logger.warning(f"텔레그램 폴링 중단 실패: {e}")
 
 
-def _token_rejected(bot) -> bool:
-    """토큰이 거부됐는지(401) 확인. 네트워크 문제와 구분하기 위한 것이다.
+def _is_401(e: Exception) -> bool:
+    text = str(e)
+    return "401" in text or "Unauthorized" in text
 
-    401 은 재시도로 풀리지 않는 영구 오류다. 네트워크 오류면 False 를 돌려
-    평소대로 재시도하게 둔다.
+
+def _token_rejected(bot, stop_event=None, checks: int = None, gap_sec: float = None) -> bool:
+    """토큰이 거부됐는지(401) 확인. 네트워크 문제·일시적 401 과 구분하기 위한 것이다.
+
+    gap_sec 간격으로 checks 번 연속 401 이어야 True. 한 번이라도 통과하거나 네트워크
+    오류가 섞이면 False 를 돌려 평소대로 재시도하게 둔다. 종료 신호가 오면 False.
     """
-    try:
-        bot.get_me()
-        return False
-    except Exception as e:
-        text = str(e)
-        if "401" in text or "Unauthorized" in text:
+    checks = TOKEN_CHECKS if checks is None else checks
+    gap_sec = TOKEN_CHECK_GAP_SEC if gap_sec is None else gap_sec
+    for i in range(checks):
+        try:
+            bot.get_me()
+            return False
+        except Exception as e:
+            if not _is_401(e):
+                logger.warning(f"텔레그램 연결 확인 실패(일시적일 수 있음): {e}")
+                return False
+            if i + 1 < checks:
+                logger.warning(f"텔레그램 401 응답 ({i + 1}/{checks}) — {gap_sec}초 뒤 다시 확인합니다")
+                if stop_event is not None:
+                    if stop_event.wait(gap_sec):
+                        return False
+                else:
+                    time.sleep(gap_sec)
+    return True
+
+
+def _wait_for_token(bot, stop_event, recheck_sec: float = None) -> bool:
+    """토큰이 거부된 뒤 recheck_sec 마다 다시 확인한다. 유효해지면 True, 종료 신호면 False.
+
+    config.txt 의 telegram_bot_token 이 바뀌었으면(BotFather 재발급) 새 토큰으로 갈아 끼운다 —
+    봇을 재시작하지 않아도 명령 수신이 돌아오게.
+    """
+    recheck_sec = TOKEN_RECHECK_SEC if recheck_sec is None else recheck_sec
+    while not stop_event.is_set():
+        if stop_event.wait(recheck_sec):
+            return False
+        try:
+            token, _ = get_telegram_settings()
+        except Exception:
+            token = ""
+        if token and isinstance(getattr(bot, "token", None), str) and token != bot.token:
+            logger.info("config.txt 의 텔레그램 토큰이 바뀌어 새 토큰으로 확인합니다")
+            bot.token = token
+        try:
+            bot.get_me()
             return True
-        logger.warning(f"텔레그램 연결 확인 실패(일시적일 수 있음): {e}")
-        return False
+        except Exception as e:
+            logger.warning(f"텔레그램 토큰 재확인 실패: {str(e)[:120]}")
+    return False
 
 
 def start_polling(stop_event):
@@ -525,31 +573,34 @@ def start_polling(stop_event):
         _add_stranger_guard(_bot)
         logger.info("텔레그램 핸들러 등록 완료")
         
-        if _token_rejected(_bot):
-            logger.error("텔레그램 토큰이 거부되었습니다 (401 Unauthorized). "
-                         "BotFather 에서 받은 telegram_bot_token 을 확인하세요. "
-                         "폴링을 중단합니다 — 매매는 그대로 계속됩니다.")
-            return
-
         logger.info("텔레그램 폴링 시작...")
         backoff = BACKOFF_START_SEC
         while not stop_event.is_set():
+            # 폴링 전마다 토큰을 확인한다. 연속 3회 401 이면 거부로 보고 쉬되, 영구 중단은 하지 않는다 —
+            # 10분마다 다시 확인해 살아나면 재개한다(일시적 401 로 이틀간 명령을 못 받은 2026-10-23 사고).
+            if _token_rejected(_bot, stop_event):
+                logger.error("텔레그램 토큰이 거부되었습니다 (401 Unauthorized, 연속 3회). "
+                             "BotFather 에서 받은 telegram_bot_token 을 확인하세요. "
+                             f"{TOKEN_RECHECK_SEC // 60}분마다 다시 확인하며, 그동안 명령은 받지 못합니다 — "
+                             "매매는 그대로 계속됩니다.")
+                if not _wait_for_token(_bot, stop_event):
+                    break
+                logger.info("텔레그램 토큰이 다시 유효합니다 — 폴링을 재개합니다")
+                backoff = BACKOFF_START_SEC
+                continue
             try:
                 # long_polling_timeout 기본값은 20초인데 timeout(HTTP)이 10초라
                 # 매번 요청이 먼저 끊겼다. 짧게 잡아 종료 신호에도 빨리 반응한다.
                 _bot.polling(none_stop=False, timeout=10, long_polling_timeout=5)
             except Exception as e:
-                logger.error(f"폴링 오류: {e}")
+                # 읽기 타임아웃 등 일시적인 것이 대부분이고 아래서 재시도하므로 WARNING (ERROR 는 /status 와 주간 감사에 잡힌다)
+                logger.warning(f"폴링 오류(재시도함): {e}")
             if stop_event.is_set():
                 break
 
             # none_stop=False 라 polling() 은 오류를 만나면 예외 없이 그냥 돌아온다.
             # 곧바로 다시 부르면 초당 1회로 폭주한다(2026-09-30 에 401 로 20분간 1174줄).
-            # 영구 오류면 멈추고, 일시적 오류면 점점 뜸하게 재시도한다.
-            if _token_rejected(_bot):
-                logger.error("텔레그램 토큰이 더 이상 유효하지 않습니다 (401 Unauthorized). "
-                             "폴링을 중단합니다 — 매매는 그대로 계속됩니다.")
-                return
+            # 점점 뜸하게 재시도한다.
             logger.warning(f"텔레그램 폴링이 중단되어 {backoff}초 뒤 재시도합니다")
             stop_event.wait(backoff)      # sleep 대신 wait: 종료 신호에 즉시 반응
             backoff = min(backoff * 2, BACKOFF_MAX_SEC)

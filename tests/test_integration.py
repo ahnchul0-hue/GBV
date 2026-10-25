@@ -1120,11 +1120,16 @@ class PollingBackoffTest(unittest.TestCase):
              mock.patch.object(th, "setup_handlers"), \
              mock.patch.object(th, "_add_stranger_guard"), \
              mock.patch.object(th, "BACKOFF_START_SEC", 1), \
-             mock.patch.object(th, "BACKOFF_MAX_SEC", 4):
+             mock.patch.object(th, "BACKOFF_MAX_SEC", 4), \
+             mock.patch.object(th, "TOKEN_CHECK_GAP_SEC", 7), \
+             mock.patch.object(th, "TOKEN_RECHECK_SEC", 9):
             tb.TeleBot.return_value = bot
             th.start_polling(event)
         th._bot = None
         return bot, event
+
+    ERR_401 = Exception("A request to the Telegram API was unsuccessful. "
+                        "Error code: 401. Description: Unauthorized")
 
     def test_transient_failure_backs_off_instead_of_hammering(self):
         bot, event = self._run(get_me=lambda: None)
@@ -1135,28 +1140,67 @@ class PollingBackoffTest(unittest.TestCase):
         _, event = self._run(get_me=lambda: None, stop_after=5)
         self.assertEqual(event.waits, [1, 2, 4, 4, 4])   # BACKOFF_MAX_SEC 에서 멈춘다
 
-    def test_rejected_token_stops_polling_for_good(self):
-        """401 은 재시도로 안 풀린다. 한 번 알리고 멈춘다 (매매는 계속)"""
-        err = Exception("A request to the Telegram API was unsuccessful. "
-                        "Error code: 401. Description: Unauthorized")
-        bot, event = self._run(get_me=mock.Mock(side_effect=err))
-        bot.polling.assert_not_called()      # 시작 전에 걸러낸다
-        self.assertEqual(event.waits, [])
+    def test_single_401_is_not_believed(self):
+        """2026-10-23 사고: 텔레그램이 한 번 401 을 돌려줬는데 멀쩡한 토큰으로 폴링을 영구 중단했다.
+        이제는 간격을 두고 다시 확인하고, 통과하면 그대로 폴링한다."""
+        E = self.ERR_401
+        bot, event = self._run(get_me=mock.Mock(side_effect=[E, None, None, None, None]), stop_after=4)
+        self.assertEqual(bot.polling.call_count, 3)
+        self.assertEqual(event.waits, [7, 1, 2, 4])          # 401 확인 간격 7초 한 번, 그 뒤 평소 백오프
 
-    def test_token_rejected_mid_run_stops(self):
+    def test_rejected_token_pauses_and_resumes_instead_of_stopping_for_good(self):
+        """연속 3회 401 → 거부로 보고 쉰다. 그래도 TOKEN_RECHECK_SEC 마다 다시 확인해 살아나면 재개한다"""
+        E = self.ERR_401
+        bot, event = self._run(get_me=mock.Mock(side_effect=[E, E, E, E, None, None, None, None]), stop_after=6)
+        # 401×3 (확인 간격 7초 ×2) → 재확인 9초: 401 → 재확인 9초: 통과 → 폴링 재개 → 백오프 1, 2
+        self.assertEqual(event.waits, [7, 7, 9, 9, 1, 2])
+        self.assertEqual(bot.polling.call_count, 2)
+
+    def test_token_rejected_mid_run_pauses_then_resumes(self):
+        E = self.ERR_401
+        bot, event = self._run(get_me=mock.Mock(side_effect=[None, E, E, E, None, None, None]), stop_after=5)
+        self.assertEqual(event.waits, [1, 7, 7, 9, 1])
+        self.assertEqual(bot.polling.call_count, 2)       # 한 번 돌고, 쉬고, 다시 돈다
+
+    def test_wait_for_token_picks_up_a_new_token_from_config(self):
+        """BotFather 에서 재발급해 config.txt 만 고쳐도 재시작 없이 새 토큰으로 돌아온다"""
         import telegram_handler as th
-        err = Exception("Error code: 401. Description: Unauthorized")
-        bot, event = self._run(get_me=mock.Mock(side_effect=[None, err]))
-        self.assertEqual(bot.polling.call_count, 1)      # 한 번 돌고 멈춘다
-        self.assertEqual(event.waits, [])
+        bot = mock.Mock(token="OLD", get_me=mock.Mock(side_effect=[self.ERR_401, None]))
+        event = self.FakeEvent(stop_after=99)
+        with mock.patch.object(th, "get_telegram_settings", return_value=("NEW", "123")):
+            self.assertTrue(th._wait_for_token(bot, event, recheck_sec=9))
+        self.assertEqual(bot.token, "NEW")
+        self.assertEqual(event.waits, [9, 9])
+
+    def test_wait_for_token_returns_false_on_stop(self):
+        import telegram_handler as th
+        bot = mock.Mock(token="T", get_me=mock.Mock(side_effect=self.ERR_401))
+        event = self.FakeEvent(stop_after=2)
+        with mock.patch.object(th, "get_telegram_settings", return_value=("T", "123")):
+            self.assertFalse(th._wait_for_token(bot, event, recheck_sec=9))
 
     def test_network_error_is_not_mistaken_for_a_bad_token(self):
         import telegram_handler as th
         err = Exception("HTTPSConnectionPool(host='api.telegram.org', port=443): Read timed out.")
-        self.assertFalse(th._token_rejected(mock.Mock(get_me=mock.Mock(side_effect=err))))
+        self.assertFalse(th._token_rejected(mock.Mock(get_me=mock.Mock(side_effect=err)), gap_sec=0))
         self.assertTrue(th._token_rejected(
-            mock.Mock(get_me=mock.Mock(side_effect=Exception("Error code: 401")))))
-        self.assertFalse(th._token_rejected(mock.Mock(get_me=mock.Mock(return_value=object()))))
+            mock.Mock(get_me=mock.Mock(side_effect=Exception("Error code: 401"))), gap_sec=0))
+        self.assertFalse(th._token_rejected(mock.Mock(get_me=mock.Mock(return_value=object())), gap_sec=0))
+        # 401 뒤에 네트워크 오류가 섞이면 판정 보류
+        mixed = mock.Mock(get_me=mock.Mock(side_effect=[Exception("Error code: 401"), err]))
+        self.assertFalse(th._token_rejected(mixed, gap_sec=0))
+
+    def test_send_reports_delivery_failure(self):
+        """응답 코드를 보지 않으면 토큰·채팅 ID 가 틀려도 '보냈다'고 믿게 된다"""
+        import notifier
+        with mock.patch.object(notifier, "get_telegram_settings", return_value=("T", "1")), \
+             mock.patch.object(notifier.requests, "post") as post:
+            post.return_value = mock.Mock(status_code=401, text='{"ok":false,"description":"Unauthorized"}')
+            self.assertFalse(notifier._send("x"))
+            post.return_value = mock.Mock(status_code=200, text='{"ok":true}')
+            self.assertTrue(notifier._send("x"))
+            post.side_effect = OSError("down")
+            self.assertFalse(notifier._send("x"))
 
 
 # ─────────────────────────────────────────
